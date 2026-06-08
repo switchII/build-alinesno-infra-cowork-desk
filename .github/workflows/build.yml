@@ -142,7 +142,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ steps.npm-cache.outputs.DIR }}
-          key: ${{ runner.os }}-npm-${{ hashFiles(format('{0}/package-lock.json', env.SOURCE_DIR)) }}
+          key: ${{ runner.os }}-npm-${{ hashFiles(format('{0}/package.json', env.SOURCE_DIR)) }}
           restore-keys: ${{ runner.os }}-npm-
 
       - name: Install frontend dependencies
@@ -164,24 +164,30 @@ jobs:
         with:
           workspaces: ${{ env.SOURCE_DIR }}/src-tauri -> target
 
-      - name: Inject version into tauri.conf.json
+      - name: Inject version and patch build command in tauri.conf.json
         working-directory: ${{ env.SOURCE_DIR }}
         run: |
           VERSION="${{ needs.determine-version.outputs.version }}"
           echo "Setting version to: $VERSION"
 
-          # 更新 tauri.conf.json 中的版本号
+          # 更新版本号和 build 命令（pnpm → npm run）
           if command -v jq &> /dev/null; then
-            jq --arg v "$VERSION" '.version = $v | .productName = ("AIPCowork-" + $v)' \
+            jq --arg v "$VERSION" \
+              '.version = $v
+               | .productName = ("AIPCowork-" + $v)
+               | .build.beforeBuildCommand = (.build.beforeBuildCommand | gsub("pnpm build"; "npm run build"))
+               | .build.beforeDevCommand = (.build.beforeDevCommand | gsub("pnpm dev"; "npm run dev"))' \
               src-tauri/tauri.conf.json > src-tauri/tauri.conf.tmp.json && \
               mv src-tauri/tauri.conf.tmp.json src-tauri/tauri.conf.json
           else
             sed -i '' "s/\"version\": \"[^\"]*\"/\"version\": \"$VERSION\"/" src-tauri/tauri.conf.json
+            sed -i '' 's/pnpm build/npm run build/g' src-tauri/tauri.conf.json
+            sed -i '' 's/pnpm dev/npm run dev/g' src-tauri/tauri.conf.json
           fi
 
       - name: Build Tauri app
         working-directory: ${{ env.SOURCE_DIR }}
-        run: pnpm tauri build --target ${{ matrix.target }}
+        run: npx tauri build --target ${{ matrix.target }}
 
       - name: Upload DMG installer
         uses: actions/upload-artifact@v4
@@ -226,7 +232,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ steps.npm-cache.outputs.DIR }}
-          key: ${{ runner.os }}-npm-${{ hashFiles(format('{0}/package-lock.json', env.SOURCE_DIR)) }}
+          key: ${{ runner.os }}-npm-${{ hashFiles(format('{0}/package.json', env.SOURCE_DIR)) }}
           restore-keys: ${{ runner.os }}-npm-
 
       - name: Install frontend dependencies
@@ -248,14 +254,18 @@ jobs:
         with:
           workspaces: ${{ env.SOURCE_DIR }}/src-tauri -> target
 
-      - name: Inject version into tauri.conf.json
+      - name: Inject version and patch build command in tauri.conf.json
         working-directory: ${{ env.SOURCE_DIR }}
         shell: bash
         run: |
           VERSION="${{ needs.determine-version.outputs.version }}"
           echo "Setting version to: $VERSION"
           # Use jq on Windows (Git Bash provides it)
-          jq --arg v "$VERSION" '.version = $v | .productName = ("AIPCowork-" + $v)' \
+          jq --arg v "$VERSION" \
+            '.version = $v
+             | .productName = ("AIPCowork-" + $v)
+             | .build.beforeBuildCommand = (.build.beforeBuildCommand | gsub("pnpm build"; "npm run build"))
+             | .build.beforeDevCommand = (.build.beforeDevCommand | gsub("pnpm dev"; "npm run dev"))' \
             src-tauri/tauri.conf.json > src-tauri/tauri.conf.tmp.json && \
             mv src-tauri/tauri.conf.tmp.json src-tauri/tauri.conf.json
 
@@ -264,7 +274,7 @@ jobs:
         env:
           OPENSSL_DIR: C:\vcpkg\installed\x64-windows-static
           OPENSSL_STATIC: '1'
-        run: pnpm tauri build --target x86_64-pc-windows-msvc
+        run: npx tauri build --target x86_64-pc-windows-msvc
 
       - name: Upload NSIS installer
         uses: actions/upload-artifact@v4
