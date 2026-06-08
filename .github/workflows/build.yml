@@ -120,7 +120,12 @@ jobs:
 
     name: macOS (${{ matrix.label }})
     runs-on: ${{ matrix.platform }}
-
+    
+    # 🌟 【在这里添加任务级别的全局环境变量】
+    env:
+      OPENSSL_STATIC: '1'
+      OPENSSL_VENDORED: '1'
+      
     steps:
       - name: Download source code
         uses: actions/download-artifact@v4
