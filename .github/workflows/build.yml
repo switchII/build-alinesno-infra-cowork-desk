@@ -1,20 +1,11 @@
 # ============================================================================
 # AIPCowork Build & Release
 # ============================================================================
-# 从指定 Git 仓库拉取 Tauri 源码，构建 macOS / Windows 桌面安装包。
+# 从指定 Git 仓库拉取 Tauri 源码，构建 macOS (Arm64) / Windows (x86_64) 桌面安装包。
 #
 # 触发方式：
 #   1. 手动触发（workflow_dispatch），可指定 tag（留空则用最新 tag）
 #   2. 通过 repository_dispatch 由源仓库 tag push 事件自动触发
-#
-# 版本号策略：
-#   - 手动指定 tag 时，使用该 tag 作为版本号
-#   - 未指定时，自动获取源仓库最新 tag 作为版本号
-#
-# 所需 Secrets：
-#   COWORK_GIT_REPOSITORY_URL      - Git 仓库地址（不含协议头，如 github.com/org/repo.git）
-#   COWORK_GIT_REPOSITORY_USER     - Git 仓库用户名
-#   COWORK_GIT_REPOSITORY_PASSWORD - Git 仓库密码 / Token
 # ============================================================================
 
 name: build and release
@@ -188,126 +179,8 @@ jobs:
           path: ${{ env.SOURCE_DIR }}/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app
           if-no-files-found: warn
 
-  # # ==========================================================================
-  # # Job 2：专门构建 macOS - x64 (Intel)
-  # # ==========================================================================
-  # build-macos-x64:
-  #   needs: [determine-version]
-  #   name: macOS (x64 Intel)
-  #   runs-on: macos-latest
-    
-  #   steps:
-  #     - name: Download source code
-  #       uses: actions/download-artifact@v4
-  #       with:
-  #         name: source-code
-  #         path: ${{ env.SOURCE_DIR }}
-
-  #     - name: Setup Node.js
-  #       uses: actions/setup-node@v4
-  #       with:
-  #         node-version: ${{ env.NODE_VERSION }}
-
-  #     - name: Get npm cache directory
-  #       id: npm-cache
-  #       shell: bash
-  #       run: echo "DIR=$(npm config get cache)" >> $GITHUB_OUTPUT
-
-  #     - name: Cache npm dependencies
-  #       uses: actions/cache@v4
-  #       with:
-  #         path: ${{ steps.npm-cache.outputs.DIR }}
-  #         key: ${{ runner.os }}-npm-x64-${{ hashFiles(format('{0}/package.json', env.SOURCE_DIR)) }}
-  #         restore-keys: ${{ runner.os }}-npm-x64-
-
-  #     - name: Install frontend dependencies
-  #       working-directory: ${{ env.SOURCE_DIR }}
-  #       run: npm install
-
-  #     - name: Install macOS system dependencies
-  #       run: |
-  #         brew install libpq mysql-client openssl@3
-  #         echo "PKG_CONFIG_PATH=$(brew --prefix libpq)/lib/pkgconfig:$(brew --prefix mysql-client)/lib/pkgconfig:$(brew --prefix openssl@3)/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" >> $GITHUB_ENV
-
-  #     - name: Setup Rust toolchain
-  #       uses: dtolnay/rust-toolchain@stable
-  #       with:
-  #         targets: x86_64-apple-darwin
-
-  #     - name: Rust cargo cache
-  #       uses: Swatinem/rust-cache@v2
-  #       with:
-  #         workspaces: ${{ env.SOURCE_DIR }}/src-tauri -> target
-  #         shared-key: macos-x64
-
-  #     - name: Inject version and patch build command in tauri.conf.json
-  #       working-directory: ${{ env.SOURCE_DIR }}
-  #       run: |
-  #         VERSION="${{ needs.determine-version.outputs.version }}"
-  #         jq --arg v "$VERSION" \
-  #           '.version = $v
-  #            | .productName = ("AIPCowork-" + $v)
-  #            | .build.beforeBuildCommand = (.build.beforeBuildCommand | gsub("pnpm build"; "npm run build"))
-  #            | .build.beforeDevCommand = (.build.beforeDevCommand | gsub("pnpm dev"; "npm run dev"))' \
-  #           src-tauri/tauri.conf.json > src-tauri/tauri.conf.tmp.json && \
-  #           mv src-tauri/tauri.conf.tmp.json src-tauri/tauri.conf.json
-            
-  #     # 🌟 核心解决交叉编译错误的关键步骤
-  #     - name: Build Tauri app
-  #       working-directory: ${{ env.SOURCE_DIR }}
-  #       shell: bash
-  #       run: |
-  #         echo "强制为 Intel 架构交叉编译注入编译参数..."
-          
-  #         # 1. 彻底禁用 pkg-config，防止它在交叉编译时报错拦截构建流程
-  #         export OPENSSL_NO_PKG_CONFIG=1
-  #         export PKG_CONFIG_ALLOW_CROSS=1
-          
-  #         # 2. 强制开启 OpenSSL 源码内置编译
-  #         export OPENSSL_VENDORED=1
-          
-  #         # 3. 明确告诉通用的 C 编译器我们要编译的架构
-  #         export CFLAGS="-arch x86_64"
-  #         export CXXFLAGS="-arch x86_64"
-          
-  #         # 4. 针对 Rust 的特定环境变量，精确指定 target 对应的编译器
-  #         export CC_x86_64_apple_darwin="clang -arch x86_64"
-  #         export CXX_x86_64_apple_darwin="clang++ -arch x86_64"
-  #         export AR_x86_64_apple_darwin="ar"
-          
-  #         npx tauri build --target x86_64-apple-darwin
-          
-  #     # - name: Build Tauri app
-  #     #   working-directory: ${{ env.SOURCE_DIR }}
-  #     #   shell: bash
-  #     #   run: |
-  #     #     echo "强制为 Intel 架构交叉编译注入 CFLAGS 参数..."
-  #     #     export CFLAGS="-arch x86_64"
-          
-  #     #     # 关键：强制 openssl-sys 在单机环境内为 x86_64 现场搓出兼容的静态库文件
-  #     #     export OPENSSL_STATIC=1
-  #     #     export OPENSSL_VENDORED=1
-  #     #     export CC="clang"
-  #     #     export AR="ar"
-          
-  #     #     npx tauri build --target x86_64-apple-darwin
-
-  #     - name: Upload DMG installer
-  #       uses: actions/upload-artifact@v4
-  #       with:
-  #         name: AIPCowork-${{ needs.determine-version.outputs.version }}-macOS-x64-dmg
-  #         path: ${{ env.SOURCE_DIR }}/src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
-  #         if-no-files-found: warn
-
-  #     - name: Upload .app bundle
-  #       uses: actions/upload-artifact@v4
-  #       with:
-  #         name: AIPCowork-${{ needs.determine-version.outputs.version }}-macOS-x64-app
-  #         path: ${{ env.SOURCE_DIR }}/src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.app
-  #         if-no-files-found: warn
-
   # ==========================================================================
-  # Windows — x86_64
+  # Job 2：Windows — x86_64
   # ==========================================================================
   build-windows:
     needs: [determine-version]
@@ -397,7 +270,7 @@ jobs:
   # ==========================================================================
   release:
     name: Create Release
-    needs: [determine-version, build-macos-arm64, build-macos-x64, build-windows]
+    needs: [determine-version, build-macos-arm64, build-windows]
     runs-on: ubuntu-latest
 
     steps:
