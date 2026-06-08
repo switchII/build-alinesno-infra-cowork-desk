@@ -133,11 +133,10 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
 
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: '9'
-          run_install: false
+      - name: Install pnpm via corepack
+        run: |
+          corepack enable
+          corepack prepare pnpm@9 --activate
 
       - name: Get pnpm store directory
         id: pnpm-cache
@@ -223,11 +222,10 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
 
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: '9'
-          run_install: false
+      - name: Install pnpm via corepack
+        run: |
+          corepack enable
+          corepack prepare pnpm@9 --activate
 
       - name: Get pnpm store directory
         id: pnpm-cache
