@@ -251,21 +251,46 @@ jobs:
              | .build.beforeDevCommand = (.build.beforeDevCommand | gsub("pnpm dev"; "npm run dev"))' \
             src-tauri/tauri.conf.json > src-tauri/tauri.conf.tmp.json && \
             mv src-tauri/tauri.conf.tmp.json src-tauri/tauri.conf.json
-
+            
+      # 🌟 核心解决交叉编译错误的关键步骤
       - name: Build Tauri app
         working-directory: ${{ env.SOURCE_DIR }}
         shell: bash
         run: |
-          echo "强制为 Intel 架构交叉编译注入 CFLAGS 参数..."
-          export CFLAGS="-arch x86_64"
+          echo "强制为 Intel 架构交叉编译注入编译参数..."
           
-          # 关键：强制 openssl-sys 在单机环境内为 x86_64 现场搓出兼容的静态库文件
-          export OPENSSL_STATIC=1
+          # 1. 彻底禁用 pkg-config，防止它在交叉编译时报错拦截构建流程
+          export OPENSSL_NO_PKG_CONFIG=1
+          export PKG_CONFIG_ALLOW_CROSS=1
+          
+          # 2. 强制开启 OpenSSL 源码内置编译
           export OPENSSL_VENDORED=1
-          export CC="clang"
-          export AR="ar"
+          
+          # 3. 明确告诉通用的 C 编译器我们要编译的架构
+          export CFLAGS="-arch x86_64"
+          export CXXFLAGS="-arch x86_64"
+          
+          # 4. 针对 Rust 的特定环境变量，精确指定 target 对应的编译器
+          export CC_x86_64_apple_darwin="clang -arch x86_64"
+          export CXX_x86_64_apple_darwin="clang++ -arch x86_64"
+          export AR_x86_64_apple_darwin="ar"
           
           npx tauri build --target x86_64-apple-darwin
+          
+      # - name: Build Tauri app
+      #   working-directory: ${{ env.SOURCE_DIR }}
+      #   shell: bash
+      #   run: |
+      #     echo "强制为 Intel 架构交叉编译注入 CFLAGS 参数..."
+      #     export CFLAGS="-arch x86_64"
+          
+      #     # 关键：强制 openssl-sys 在单机环境内为 x86_64 现场搓出兼容的静态库文件
+      #     export OPENSSL_STATIC=1
+      #     export OPENSSL_VENDORED=1
+      #     export CC="clang"
+      #     export AR="ar"
+          
+      #     npx tauri build --target x86_64-apple-darwin
 
       - name: Upload DMG installer
         uses: actions/upload-artifact@v4
