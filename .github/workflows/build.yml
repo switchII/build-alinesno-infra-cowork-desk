@@ -252,15 +252,14 @@ jobs:
             src-tauri/tauri.conf.json > src-tauri/tauri.conf.tmp.json && \
             mv src-tauri/tauri.conf.tmp.json src-tauri/tauri.conf.json
 
-      # 🌟 核心解决交叉编译错误的关键步骤
       - name: Build Tauri app
         working-directory: ${{ env.SOURCE_DIR }}
         shell: bash
         run: |
-          echo "强制为 Intel 架构交叉编译注入编译参数..."
+          echo "强制为 Intel 架构交叉编译注入 CFLAGS 参数..."
           export CFLAGS="-arch x86_64"
           
-          # 强制 openssl-sys 为 x86_64 现场搓出静态库文件
+          # 关键：强制 openssl-sys 在单机环境内为 x86_64 现场搓出兼容的静态库文件
           export OPENSSL_STATIC=1
           export OPENSSL_VENDORED=1
           export CC="clang"
@@ -339,7 +338,6 @@ jobs:
         run: |
           VERSION="${{ needs.determine-version.outputs.version }}"
           echo "Setting version to: $VERSION"
-          # Use jq on Windows (Git Bash provides it)
           jq --arg v "$VERSION" \
             '.version = $v
              | .productName = ("AIPCowork-" + $v)
@@ -374,7 +372,7 @@ jobs:
   # ==========================================================================
   release:
     name: Create Release
-    needs: [determine-version, build-macos, build-windows]
+    needs: [determine-version, build-macos-arm64, build-macos-x64, build-windows]
     runs-on: ubuntu-latest
 
     steps:
