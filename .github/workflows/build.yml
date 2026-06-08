@@ -187,6 +187,9 @@ jobs:
 
       - name: Build Tauri app
         working-directory: ${{ env.SOURCE_DIR }}
+        env:
+          OPENSSL_STATIC: '1'
+          OPENSSL_VENDORED: '1'
         run: npx tauri build --target ${{ matrix.target }}
 
       - name: Upload DMG installer
