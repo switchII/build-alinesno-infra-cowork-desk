@@ -190,13 +190,34 @@ jobs:
             sed -i '' 's/pnpm dev/npm run dev/g' src-tauri/tauri.conf.json
           fi
 
+      # - name: Build Tauri app
+      #   working-directory: ${{ env.SOURCE_DIR }}
+      #   env:
+      #     OPENSSL_STATIC: '1'
+      #     OPENSSL_VENDORED: '1'
+      #   run: npx tauri build --target ${{ matrix.target }}
+        
+      # 🌟 修改核心：在此处根据 target 注入交叉编译 CFLAGS
       - name: Build Tauri app
         working-directory: ${{ env.SOURCE_DIR }}
-        env:
-          OPENSSL_STATIC: '1'
-          OPENSSL_VENDORED: '1'
-        run: npx tauri build --target ${{ matrix.target }}
-
+        shell: bash
+        run: |
+          if [ "${{ matrix.target }}" = "x86_64-apple-darwin" ]; then
+            echo "Setting up cross-compilation flags for Intel (x86_64)..."
+            export CFLAGS="-arch x86_64"
+          else
+            echo "Setting up native flags for Apple Silicon (arm64)..."
+            export CFLAGS="-arch arm64"
+          fi
+          
+          # 告诉 openssl-sys 现场编译对应的静态库，不要找系统的 pkg-config
+          export OPENSSL_STATIC=1
+          export OPENSSL_VENDORED=1
+          export CC="clang"
+          export AR="ar"
+          
+          npx tauri build --target ${{ matrix.target }}
+          
       - name: Upload DMG installer
         uses: actions/upload-artifact@v4
         with:
