@@ -1,0 +1,325 @@
+# ============================================================================
+# AIPCowork Build & Release
+# ============================================================================
+# 从指定 Git 仓库拉取 Tauri 源码，构建 macOS / Windows 桌面安装包。
+#
+# 触发方式：
+#   1. 手动触发（workflow_dispatch），可指定 tag（留空则用最新 tag）
+#   2. 通过 repository_dispatch 由源仓库 tag push 事件自动触发
+#
+# 版本号策略：
+#   - 手动指定 tag 时，使用该 tag 作为版本号
+#   - 未指定时，自动获取源仓库最新 tag 作为版本号
+#
+# 所需 Secrets：
+#   COWORK_GIT_REPOSITORY_URL      - Git 仓库地址（不含协议头，如 github.com/org/repo.git）
+#   COWORK_GIT_REPOSITORY_USER     - Git 仓库用户名
+#   COWORK_GIT_REPOSITORY_PASSWORD - Git 仓库密码 / Token
+# ============================================================================
+
+name: Build and Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '指定要构建的 Git tag（留空则使用最新 tag）'
+        required: false
+        default: ''
+        type: string
+  repository_dispatch:
+    types: [trigger-build]
+
+permissions:
+  contents: write
+  actions: read
+
+env:
+  NODE_VERSION: '20'
+  SOURCE_DIR: source
+
+jobs:
+  # ==========================================================================
+  # 确定版本号 —— 获取源仓库最新 tag
+  # ==========================================================================
+  determine-version:
+    name: Determine Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.extract-version.outputs.VERSION }}
+      tag: ${{ steps.extract-version.outputs.TAG }}
+
+    steps:
+      - name: Clone source repository and checkout target tag
+        id: clone-tag
+        shell: bash
+        run: |
+          REPO="${{ secrets.COWORK_GIT_REPOSITORY_URL }}"
+          REPO="${REPO#https://}"
+          REPO="${REPO#http://}"
+
+          # 如果手动指定了 tag，直接 clone 该 tag
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            echo "Using specified tag: ${{ github.event.inputs.tag }}"
+            git clone --depth 1 \
+              --branch "${{ github.event.inputs.tag }}" \
+              "https://${{ secrets.COWORK_GIT_REPOSITORY_USER }}:${{ secrets.COWORK_GIT_REPOSITORY_PASSWORD }}@${REPO}" \
+              ${{ env.SOURCE_DIR }}
+            SELECTED_TAG="${{ github.event.inputs.tag }}"
+          else
+            # 未指定 tag，获取所有 tags 后切到最新 tag
+            git clone --depth 1 \
+              "https://${{ secrets.COWORK_GIT_REPOSITORY_USER }}:${{ secrets.COWORK_GIT_REPOSITORY_PASSWORD }}@${REPO}" \
+              ${{ env.SOURCE_DIR }}
+            cd ${{ env.SOURCE_DIR }}
+            git fetch --tags --depth 1 2>/dev/null || git fetch --tags
+            LATEST_TAG=$(git tag --sort=-creatordate | head -1)
+            if [ -z "$LATEST_TAG" ]; then
+              echo "ERROR: No tags found in source repository"
+              exit 1
+            fi
+            echo "Using latest tag: $LATEST_TAG"
+            git checkout "$LATEST_TAG"
+            SELECTED_TAG="$LATEST_TAG"
+          fi
+          echo "SELECTED_TAG=$SELECTED_TAG" >> $GITHUB_OUTPUT
+
+      - name: Extract version from tag
+        id: extract-version
+        shell: bash
+        run: |
+          TAG="${{ steps.clone-tag.outputs.SELECTED_TAG }}"
+          # 去掉 tag 前缀 v（如 v0.1.0 → 0.1.0）
+          VERSION="${TAG#v}"
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "TAG=$TAG" >> $GITHUB_OUTPUT
+          echo "Building version: $VERSION (tag: $TAG)"
+
+      - name: Upload source for downstream jobs
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-code
+          path: ${{ env.SOURCE_DIR }}
+          retention-days: 1
+
+  # ==========================================================================
+  # macOS — arm64 (Apple Silicon) + x86_64 (Intel)
+  # ==========================================================================
+  build-macos:
+    needs: [determine-version]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            target: aarch64-apple-darwin
+            label: macOS-arm64
+          - platform: macos-latest
+            target: x86_64-apple-darwin
+            label: macOS-x64
+
+    name: macOS (${{ matrix.label }})
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - name: Download source code
+        uses: actions/download-artifact@v4
+        with:
+          name: source-code
+          path: ${{ env.SOURCE_DIR }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - name: Get pnpm store directory
+        id: pnpm-cache
+        shell: bash
+        run: echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_OUTPUT
+
+      - name: Cache pnpm dependencies
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-${{ hashFiles(format('{0}/pnpm-lock.yaml', env.SOURCE_DIR)) }}
+          restore-keys: ${{ runner.os }}-pnpm-
+
+      - name: Install frontend dependencies
+        working-directory: ${{ env.SOURCE_DIR }}
+        run: pnpm install --frozen-lockfile
+
+      - name: Install macOS system dependencies
+        run: |
+          brew install libpq mysql-client openssl@3
+          echo "PKG_CONFIG_PATH=$(brew --prefix libpq)/lib/pkgconfig:$(brew --prefix mysql-client)/lib/pkgconfig:$(brew --prefix openssl@3)/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" >> $GITHUB_ENV
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Rust cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ env.SOURCE_DIR }}/src-tauri -> target
+
+      - name: Inject version into tauri.conf.json
+        working-directory: ${{ env.SOURCE_DIR }}
+        run: |
+          VERSION="${{ needs.determine-version.outputs.version }}"
+          echo "Setting version to: $VERSION"
+
+          # 更新 tauri.conf.json 中的版本号
+          if command -v jq &> /dev/null; then
+            jq --arg v "$VERSION" '.version = $v | .productName = ("AIPCowork-" + $v)' \
+              src-tauri/tauri.conf.json > src-tauri/tauri.conf.tmp.json && \
+              mv src-tauri/tauri.conf.tmp.json src-tauri/tauri.conf.json
+          else
+            sed -i '' "s/\"version\": \"[^\"]*\"/\"version\": \"$VERSION\"/" src-tauri/tauri.conf.json
+          fi
+
+      - name: Build Tauri app
+        working-directory: ${{ env.SOURCE_DIR }}
+        run: pnpm tauri build --target ${{ matrix.target }}
+
+      - name: Upload DMG installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: AIPCowork-${{ needs.determine-version.outputs.version }}-${{ matrix.label }}-dmg
+          path: ${{ env.SOURCE_DIR }}/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+          if-no-files-found: warn
+
+      - name: Upload .app bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: AIPCowork-${{ needs.determine-version.outputs.version }}-${{ matrix.label }}-app
+          path: ${{ env.SOURCE_DIR }}/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app
+          if-no-files-found: warn
+
+  # ==========================================================================
+  # Windows — x86_64
+  # ==========================================================================
+  build-windows:
+    needs: [determine-version]
+    name: Windows (x86_64)
+    runs-on: windows-latest
+
+    steps:
+      - name: Download source code
+        uses: actions/download-artifact@v4
+        with:
+          name: source-code
+          path: ${{ env.SOURCE_DIR }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - name: Get pnpm store directory
+        id: pnpm-cache
+        shell: bash
+        run: echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_OUTPUT
+
+      - name: Cache pnpm dependencies
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-${{ hashFiles(format('{0}/pnpm-lock.yaml', env.SOURCE_DIR)) }}
+          restore-keys: ${{ runner.os }}-pnpm-
+
+      - name: Install frontend dependencies
+        working-directory: ${{ env.SOURCE_DIR }}
+        run: pnpm install --frozen-lockfile
+
+      - name: Install OpenSSL via vcpkg
+        run: |
+          vcpkg integrate install
+          vcpkg install openssl:x64-windows-static
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ env.SOURCE_DIR }}/src-tauri -> target
+
+      - name: Inject version into tauri.conf.json
+        working-directory: ${{ env.SOURCE_DIR }}
+        shell: bash
+        run: |
+          VERSION="${{ needs.determine-version.outputs.version }}"
+          echo "Setting version to: $VERSION"
+          # Use jq on Windows (Git Bash provides it)
+          jq --arg v "$VERSION" '.version = $v | .productName = ("AIPCowork-" + $v)' \
+            src-tauri/tauri.conf.json > src-tauri/tauri.conf.tmp.json && \
+            mv src-tauri/tauri.conf.tmp.json src-tauri/tauri.conf.json
+
+      - name: Build Tauri app
+        working-directory: ${{ env.SOURCE_DIR }}
+        env:
+          OPENSSL_DIR: C:\vcpkg\installed\x64-windows-static
+          OPENSSL_STATIC: '1'
+        run: pnpm tauri build --target x86_64-pc-windows-msvc
+
+      - name: Upload NSIS installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: AIPCowork-${{ needs.determine-version.outputs.version }}-Windows-x64-installer
+          path: ${{ env.SOURCE_DIR }}/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+          if-no-files-found: warn
+
+      - name: Upload MSI installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: AIPCowork-${{ needs.determine-version.outputs.version }}-Windows-x64-msi
+          path: ${{ env.SOURCE_DIR }}/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
+          if-no-files-found: warn
+
+  # ==========================================================================
+  # 创建 GitHub Release
+  # ==========================================================================
+  release:
+    name: Create Release
+    needs: [determine-version, build-macos, build-windows]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List artifacts
+        run: |
+          echo "=== Build Artifacts ==="
+          find artifacts -type f | sort
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.determine-version.outputs.tag }}
+          name: AIPCowork ${{ needs.determine-version.outputs.version }}
+          draft: true
+          generate_release_notes: true
+          files: |
+            artifacts/**/*.dmg
+            artifacts/**/*.exe
+            artifacts/**/*.msi
+          fail_on_unmatched_files: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
