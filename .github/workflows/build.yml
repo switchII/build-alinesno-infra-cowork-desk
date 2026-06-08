@@ -17,7 +17,7 @@
 #   COWORK_GIT_REPOSITORY_PASSWORD - Git 仓库密码 / Token
 # ============================================================================
 
-name: Build and Release
+name: build and release
 
 on:
   workflow_dispatch:
