@@ -1,4 +1,4 @@
-name: Build macOS x64 (Intel)
+name: build mac-os x64 (intel)
 
 on:
   workflow_dispatch:
@@ -19,7 +19,7 @@ env:
 jobs:
   build-macos-x64:
     name: Build macOS x64
-    runs-on: macos-15 # 稳定支持 x64 交叉编译
+    runs-on: macos-15-intel # 最新可用系统，已完美支持 x64 编译
     steps:
       - name: Checkout source code
         run: |
@@ -50,19 +50,12 @@ jobs:
         working-directory: ${{ env.SOURCE_DIR }}
         run: npm install
 
-      # 核心修复：安装 Intel/x64 架构 OpenSSL，解决交叉编译报错
-      - name: Install x64 OpenSSL & dependencies
+      - name: Install macOS dependencies
         run: |
-          brew install llvm libpq mysql-client
-          brew install openssl@3 --build-from-source --universal
-          
-          OPENSSL_DIR=$(brew --prefix openssl@3)
-          echo "OPENSSL_DIR=$OPENSSL_DIR" >> $GITHUB_ENV
-          echo "PKG_CONFIG_PATH=$OPENSSL_DIR/lib/pkgconfig" >> $GITHUB_ENV
-          echo "OPENSSL_STATIC=1" >> $GITHUB_ENV
-          echo "OPENSSL_VENDORED=1" >> $GITHUB_ENV
+          brew install libpq mysql-client openssl@3
+          echo "PKG_CONFIG_PATH=$(brew --prefix libpq)/lib/pkgconfig:$(brew --prefix mysql-client)/lib/pkgconfig:$(brew --prefix openssl@3)/lib/pkgconfig" >> $GITHUB_ENV
 
-      - name: Setup Rust (x86_64 Intel)
+      - name: Setup Rust (x64)
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-apple-darwin
@@ -75,14 +68,11 @@ jobs:
             '.version = $v | .productName = "AIPCowork-$v" | .build.beforeBuildCommand = "npm run build" | .build.beforeDevCommand = "npm run dev"' \
             src-tauri/tauri.conf.json > tmp.json && mv tmp.json src-tauri/tauri.conf.json
 
-      # 核心修复：强制 x64 编译 + 正确 OpenSSL 路径
       - name: Build Tauri macOS x64
         working-directory: ${{ env.SOURCE_DIR }}
         run: |
-          export ARCH="x86_64"
-          export CFLAGS="-arch $ARCH"
-          export CXXFLAGS="-arch $ARCH"
-          export LDFLAGS="-arch $ARCH"
+          export CFLAGS="-arch x86_64"
+          export OPENSSL_STATIC=1
           npx tauri build --target x86_64-apple-darwin
 
       - name: Upload DMG
@@ -97,11 +87,11 @@ jobs:
           name: AIPCowork-${{ env.VERSION }}-macOS-x64-app
           path: ${{ env.SOURCE_DIR }}/src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.app
 
-      - name: Create GitHub Release
+      - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.SELECTED_TAG }}
-          name: AIPCowork ${{ env.VERSION }} (macOS Intel x64)
+          name: AIPCowork ${{ env.VERSION }} (macOS x64)
           draft: true
           files: |
             ${{ env.SOURCE_DIR }}/src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
