@@ -110,7 +110,21 @@ jobs:
         with:
           name: source-code
           path: ${{ env.SOURCE_DIR }}
+          
+      - name: Verify code & show file content
+        shell: bash
+        run: |
+          cd ${{ env.SOURCE_DIR }}
+          echo "====================================="
+          echo "✅ 最后一次提交日志"
+          echo "====================================="
+          git log -1 --stat
 
+          echo -e "\n====================================="
+          echo "📄 tauri.conf.json 内容"
+          echo "====================================="
+          cat src-tauri/tauri.conf.json
+          
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
