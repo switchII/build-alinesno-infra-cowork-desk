@@ -66,6 +66,19 @@ jobs:
           echo "===> 最终使用的 Tag：$SELECTED_TAG"
           echo "SELECTED_TAG=$SELECTED_TAG" >> $GITHUB_OUTPUT
 
+          echo -e "\n====================================="
+          echo "📄 查看文件：src-tauri/tauri.conf.json"
+          echo "====================================="
+          cat src-tauri/tauri.conf.json
+          echo -e "=====================================\n"
+
+          # ↓↓↓ 在这里加上下面的代码 ↓↓↓
+          echo -e "\n====================================="
+          echo "📝 最后一次 Git 提交日志"
+          echo "====================================="
+          git log -1 --stat
+          # ↑↑↑ 结束 ↑↑↑
+
       - name: Extract version from tag
         id: extract-version
         shell: bash
