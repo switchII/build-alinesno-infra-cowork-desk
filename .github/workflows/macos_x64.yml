@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: '指定要构建的 Git tag（留空则使用最新 tag）'
+        description: "指定要构建的 Git tag（留空则使用最新 tag）"
         required: false
-        default: ''
+        default: ""
         type: string
   repository_dispatch:
     types: [trigger-build]
@@ -16,43 +16,39 @@ permissions:
   actions: read
 
 env:
-  NODE_VERSION: 24
-  SOURCE_DIR: source
-  QINIU_BUCKET: ${{ secrets.QINIU_BUCKET }}
-  QINIU_DOMAIN: ${{ secrets.QINIU_DOMAIN }}
+  NODE_VERSION: "24"
+  SOURCE_DIR: "source"
+  QINIU_DIR: "aip-cowork-releases/"
 
 jobs:
   build-macos-x64:
     name: Build macOS x64
     runs-on: macos-15-intel
     steps:
-      - name: Checkout source code (FIXED: 正确拉取 tag 代码)
+      - name: Checkout source code
+        shell: bash
         run: |
           REPO="${{ secrets.COWORK_GIT_REPOSITORY_URL }}"
           REPO="${REPO#https://}"
           REPO="${REPO#http://}"
           AUTH_URL="https://${{ secrets.COWORK_GIT_REPOSITORY_USER }}:${{ secrets.COWORK_GIT_REPOSITORY_PASSWORD }}@${REPO}"
 
-          # 克隆完整仓库（不浅克隆，才能拿到所有 tag 代码）
+          # 克隆代码
           git clone "$AUTH_URL" ${{ env.SOURCE_DIR }}
           cd ${{ env.SOURCE_DIR }}
 
-          # 获取最新 tag
+          # 获取最新 Tag
           git fetch --tags
           if [ -n "${{ github.event.inputs.tag }}" ]; then
             SELECTED_TAG="${{ github.event.inputs.tag }}"
           else
-            SELECTED_TAG=$(git tag --sort=-creatordate | head -1)
+            SELECTED_TAG=$(git tag --sort=-creatordate | head -n 1)
           fi
 
-          # 真正切换到 tag 代码（关键修复）
+          # 切换到正确的 Tag
           git checkout "$SELECTED_TAG"
 
-          # 输出确认
-          echo "✅ 使用 tag: $SELECTED_TAG"
-          echo "✅ 当前提交: $(git rev-parse --short HEAD)"
-          
-          # 导出变量
+          # 输出版本信息
           echo "SELECTED_TAG=$SELECTED_TAG" >> $GITHUB_ENV
           echo "VERSION=${SELECTED_TAG#v}" >> $GITHUB_ENV
 
@@ -70,33 +66,31 @@ jobs:
           brew install libpq mysql-client openssl@3
           echo "PKG_CONFIG_PATH=$(brew --prefix libpq)/lib/pkgconfig:$(brew --prefix mysql-client)/lib/pkgconfig:$(brew --prefix openssl@3)/lib/pkgconfig" >> $GITHUB_ENV
 
-      - name: Setup Rust (x64)
+      - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-apple-darwin
 
-      - name: Patch tauri.conf.json
+      - name: Patch tauri config
         working-directory: ${{ env.SOURCE_DIR }}
         run: |
           VERSION=${{ env.VERSION }}
-          jq --arg v "$VERSION" \
-            '.version = $v | .productName = "AIPCowork-$v" | .build.beforeBuildCommand = "npm run build" | .build.beforeDevCommand = "npm run dev"' \
-            src-tauri/tauri.conf.json > tmp.json && mv tmp.json src-tauri/tauri.conf.json
+          jq --arg v "$VERSION" '.version = $v | .productName = "AIPCowork-$v" | .build.beforeBuildCommand = "npm run build" | .build.beforeDevCommand = "npm run dev"' src-tauri/tauri.conf.json > tmp.json && mv tmp.json src-tauri/tauri.conf.json
 
-      - name: Build Tauri macOS x64
+      - name: Build Tauri App
         working-directory: ${{ env.SOURCE_DIR }}
         run: |
           export CFLAGS="-arch x86_64"
           export OPENSSL_STATIC=1
           npx tauri build --target x86_64-apple-darwin
 
-      - name: Upload DMG
+      - name: Upload DMG artifact
         uses: actions/upload-artifact@v4
         with:
           name: AIPCowork-${{ env.VERSION }}-macOS-x64-dmg
           path: ${{ env.SOURCE_DIR }}/src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
 
-      - name: Upload APP
+      - name: Upload APP artifact
         uses: actions/upload-artifact@v4
         with:
           name: AIPCowork-${{ env.VERSION }}-macOS-x64-app
@@ -105,16 +99,14 @@ jobs:
       - name: Install qshell
         run: brew install qshell
 
-      - name: Upload DMG to Qiniu
+      - name: Upload to Qiniu
         run: |
-          qshell account "${{ secrets.QINIU_ACCESS_KEY }}" "${{ secrets.QINIU_SECRET_KEY }}" "github-action"
-          DMG_PATH=$(ls ${{ env.SOURCE_DIR }}/src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg)
-          QINIU_DIR="aip-cowork-releases/"
-          SAVE_NAME="${QINIU_DIR}AIPCowork-latest-macOS-x64.dmg"
-          qshell rput --overwrite ${{ secrets.QINIU_BUCKET }} "$SAVE_NAME" "$DMG_PATH"
-          echo "✅ 上传成功：https://${{ env.QINIU_DOMAIN }}/$SAVE_NAME"
+          qshell account "${{ secrets.QINIU_ACCESS_KEY }}" "${{ secrets.QINIU_SECRET_KEY }}" github-action
+          DMG=$(ls ${{ env.SOURCE_DIR }}/src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg)
+          SAVE_NAME="${{ env.QINIU_DIR }}AIPCowork-latest-macOS-x64.dmg"
+          qshell rput --overwrite ${{ secrets.QINIU_BUCKET }} "$SAVE_NAME" "$DMG"
 
-      - name: Create Release
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.SELECTED_TAG }}
