@@ -111,19 +111,23 @@ jobs:
           name: source-code
           path: ${{ env.SOURCE_DIR }}
           
-      - name: Verify code & show file content
+      - name: Verify code version
         shell: bash
         run: |
           cd ${{ env.SOURCE_DIR }}
           echo "====================================="
-          echo "✅ 最后一次提交日志"
+          echo "✅ 验证代码版本（无git，不报错）"
           echo "====================================="
-          git log -1 --stat
 
           echo -e "\n====================================="
-          echo "📄 tauri.conf.json 内容"
+          echo "📄 src-tauri/tauri.conf.json 版本号"
           echo "====================================="
-          cat src-tauri/tauri.conf.json
+          cat src-tauri/tauri.conf.json | grep '"version"'
+
+          echo -e "\n====================================="
+          echo "📄 package.json 版本号"
+          echo "====================================="
+          cat package.json | grep '"version"'
           
       - name: Setup Node.js
         uses: actions/setup-node@v4
