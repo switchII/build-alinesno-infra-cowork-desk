@@ -109,8 +109,7 @@ jobs:
           
       - name: Verify code version
         shell: bash
-        run: |
-          cd ${{ env.SOURCE_DIR }}
+        run: | 
           echo "====================================="
           echo "✅ 验证代码版本（无git，不报错）"
           echo "====================================="
@@ -135,7 +134,7 @@ jobs:
           
           VERSION=${{ env.VERSION }}
           jq --arg v "$VERSION" \
-            '.version = $v | .productName = "AIPCowork-$v" | .build.beforeBuildCommand = "npm run build" | .build.beforeDevCommand = "npm run dev"' \
+            '.version = $v | .productName = "Cowork-$v" | .build.beforeBuildCommand = "npm run build" | .build.beforeDevCommand = "npm run dev"' \
             src-tauri/tauri.conf.json > tmp.json && mv tmp.json src-tauri/tauri.conf.json
             
       - name: 🔍 打印最终 tauri.conf.json（排查版本）
@@ -155,13 +154,13 @@ jobs:
       - name: Upload DMG
         uses: actions/upload-artifact@v4
         with:
-          name: AIPCowork-${{ env.VERSION }}-macOS-x64-dmg
+          name: Cowork-${{ env.VERSION }}-macOS-x64-dmg
           path: ${{ env.SOURCE_DIR }}/src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
 
       - name: Upload APP
         uses: actions/upload-artifact@v4
         with:
-          name: AIPCowork-${{ env.VERSION }}-macOS-x64-app
+          name: Cowork-${{ env.VERSION }}-macOS-x64-app
           path: ${{ env.SOURCE_DIR }}/src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.app
 
       # ===================== 【已修复】七牛云上传 =====================
@@ -190,7 +189,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.SELECTED_TAG }}
-          name: AIPCowork ${{ env.VERSION }} (macOS x64)
+          name: Cowork ${{ env.VERSION }} (macOS x64)
           draft: true
           files: |
             ${{ env.SOURCE_DIR }}/src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
