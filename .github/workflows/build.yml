@@ -169,6 +169,11 @@ jobs:
       - name: Inject version and patch build command in tauri.conf.json
         working-directory: ${{ env.SOURCE_DIR }}
         run: |
+
+          echo "====== 开始版本配置 ======"
+          cat src-tauri/tauri.conf.json | grep '"version"'
+          echo "=========================="
+          
           VERSION="${{ needs.determine-version.outputs.version }}"
           jq --arg v "$VERSION" \
             '.version = $v
