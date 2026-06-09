@@ -39,14 +39,15 @@ jobs:
           REPO="${REPO#https://}"
           REPO="${REPO#http://}"
           AUTH_URL="https://${{ secrets.COWORK_GIT_REPOSITORY_USER }}:${{ secrets.COWORK_GIT_REPOSITORY_PASSWORD }}@${REPO}"
+          SOURCE_DIR="${{ env.SOURCE_DIR }}"
 
           if [ -n "${{ github.event.inputs.tag }}" ]; then
             SELECTED_TAG="${{ github.event.inputs.tag }}"
             echo "Using specified tag: $SELECTED_TAG"
-            git clone --depth 1 --branch "$SELECTED_TAG" "$AUTH_URL" ${{ env.SOURCE_DIR }}
+            git clone --depth 1 --branch "$SELECTED_TAG" "$AUTH_URL" "$SOURCE_DIR"
           else
-            git clone "$AUTH_URL" ${{ env.SOURCE_DIR }}
-            cd ${{ env.SOURCE_DIR }}
+            git clone "$AUTH_URL" "$SOURCE_DIR"
+            cd "$SOURCE_DIR"
             
             git fetch --tags
             LATEST_TAG=$(git tag --sort=-creatordate | head -1)
@@ -61,7 +62,7 @@ jobs:
             git checkout "$SELECTED_TAG"
           fi
 
-          cd ${{ env.SOURCE_DIR }}
+          cd "$SOURCE_DIR"
           echo "Current checked out commit: $(git rev-parse HEAD)"
           echo "Current tag: $(git describe --tags)"
           
@@ -170,20 +171,16 @@ jobs:
           path: ${{ env.SOURCE_DIR }}/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app
           if-no-files-found: warn
 
-      # ===================== 七牛上传 macOS Arm64 =====================
       - name: Install qshell
         run: brew install qshell
 
       - name: Upload macOS DMG to Qiniu
         run: |
           qshell account "${{ secrets.QINIU_ACCESS_KEY }}" "${{ secrets.QINIU_SECRET_KEY }}" "github-action"
-          
           DMG_PATH=$(ls ${{ env.SOURCE_DIR }}/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg)
           SAVE_NAME="${{ env.QINIU_DIR }}AIPCowork-latest-macOS-arm64.dmg" 
-          
           qshell rput --overwrite ${{ env.QINIU_BUCKET }} "$SAVE_NAME" "$DMG_PATH"
           echo "✅ 上传成功：https://${{ env.QINIU_DOMAIN }}/$SAVE_NAME"
-      # =================================================================
 
   build-windows:
     needs: [determine-version]
@@ -238,7 +235,6 @@ jobs:
         shell: bash
         run: |
           VERSION="${{ needs.determine-version.outputs.version }}"
-          echo "Setting version to: $VERSION"
           jq --arg v "$VERSION" \
             '.version = $v
              | .productName = ("AIPCowork-" + $v)
@@ -268,7 +264,6 @@ jobs:
           path: ${{ env.SOURCE_DIR }}/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
           if-no-files-found: warn
 
-      # ===================== 七牛上传 Windows x64 =====================
       - name: Install qshell (Windows)
         run: |
           curl -L https://github.com/qiniu/qshell/releases/download/v2.18.0/qshell-v2.18.0-windows-amd64.zip -o qshell.zip
@@ -278,13 +273,10 @@ jobs:
       - name: Upload Windows EXE to Qiniu
         run: |
           qshell account "${{ secrets.QINIU_ACCESS_KEY }}" "${{ secrets.QINIU_SECRET_KEY }}" "github-action"
-          
           $exe = Get-ChildItem "${{ env.SOURCE_DIR }}/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe" | Select-Object -First 1
           $SAVE_NAME = "${{ env.QINIU_DIR }}AIPCowork-latest-Windows-x64.exe"
-          
           qshell rput --overwrite ${{ env.QINIU_BUCKET }} $SAVE_NAME $exe.FullName
           echo "✅ 上传成功：https://${{ env.QINIU_DOMAIN }}/$SAVE_NAME"
-      # =================================================================
 
   release:
     name: Create Release
