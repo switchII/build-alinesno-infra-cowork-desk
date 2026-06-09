@@ -1,3 +1,27 @@
+name: test checkout
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '指定要构建的 Git tag（留空则使用最新 tag）'
+        required: false
+        default: ''
+        type: string
+  repository_dispatch:
+    types: [trigger-build]
+
+permissions:
+  contents: write
+  actions: read
+
+env:
+  NODE_VERSION: '24'
+  SOURCE_DIR: source
+  QINIU_BUCKET: ${{ secrets.QINIU_BUCKET }}
+  QINIU_DOMAIN: ${{ secrets.QINIU_DOMAIN }}
+  QINIU_DIR: aip-cowork-releases/
+
 jobs:
   determine-version:
     name: Determine Version
@@ -11,7 +35,6 @@ jobs:
         id: clone-tag
         shell: bash
         run: |
-          # 克隆仓库
           REPO="${{ secrets.COWORK_GIT_REPOSITORY_URL }}"
           REPO="${REPO#https://}"
           REPO="${REPO#http://}"
@@ -20,36 +43,26 @@ jobs:
           git clone "$REPO_URL" source
           cd source
           
-          # 强制拉取所有最新 tag（关键！确保本地是最新的）
           echo "===> 拉取最新 Tags..."
           git fetch --tags --force
           
-          # 列出所有 Tags（用于日志确认）
           echo "===> 仓库所有 Tags："
           git tag --list
           
-          # 选择 Tag
           if [ -n "${{ github.event.inputs.tag }}" ]; then
             SELECTED_TAG="${{ github.event.inputs.tag }}"
             echo "===> 使用手动输入的 Tag：$SELECTED_TAG"
           else
-            # 获取最新 Tag（安全写法）
             echo "===> 未输入 Tag，自动获取最新 Tag..."
             SELECTED_TAG=$(git describe --tags --abbrev=0 2>/dev/null || git rev-list --tags --max-count=1 | xargs git describe --tags 2>/dev/null)
-            
-            # 校验：如果没有任何 Tag，直接报错
             if [ -z "$SELECTED_TAG" ]; then
               echo "❌ 错误：仓库中没有任何 Tag！"
               exit 1
             fi
-            
             echo "===> 自动获取到最新 Tag：$SELECTED_TAG"
           fi
           
-          # 切换到该 Tag
           git checkout "$SELECTED_TAG"
-          
-          # 输出最终确认
           echo "===> 最终使用的 Tag：$SELECTED_TAG"
           echo "SELECTED_TAG=$SELECTED_TAG" >> $GITHUB_OUTPUT
 
@@ -62,7 +75,6 @@ jobs:
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
           echo "TAG=$TAG" >> $GITHUB_OUTPUT
           
-          # 输出最终结果
           echo "✅ 最终版本信息："
           echo "Tag = $TAG"
           echo "版本号 = $VERSION"
