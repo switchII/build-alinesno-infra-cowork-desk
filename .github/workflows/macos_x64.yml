@@ -138,6 +138,10 @@ jobs:
           jq --arg v "$VERSION" \
             '.version = $v | .productName = "Cowork-$v" | .build.beforeBuildCommand = "npm run build" | .build.beforeDevCommand = "npm run dev"' \
             src-tauri/tauri.conf.json > tmp.json && mv tmp.json src-tauri/tauri.conf.json
+ 
+          echo "====== 开始版本配置 ======"
+          cat src-tauri/tauri.conf.json | grep '"version"'
+          echo "=========================="
             
       - name: 🔍 打印最终 tauri.conf.json（排查版本）
         working-directory: ${{ env.SOURCE_DIR }}
