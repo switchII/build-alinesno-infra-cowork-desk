@@ -35,37 +35,28 @@ jobs:
         id: clone-tag
         shell: bash
         run: |
+          # 1. 处理仓库地址
           REPO="${{ secrets.COWORK_GIT_REPOSITORY_URL }}"
           REPO="${REPO#https://}"
           REPO="${REPO#http://}"
           AUTH_URL="https://${{ secrets.COWORK_GIT_REPOSITORY_USER }}:${{ secrets.COWORK_GIT_REPOSITORY_PASSWORD }}@${REPO}"
-          SOURCE_DIR="${{ env.SOURCE_DIR }}"
 
+          # 2. 克隆代码（强制指定目录）
+          git clone "$AUTH_URL" source
+          cd source || exit 1
+
+          # 3. 获取最新 tag
+          git fetch --tags
           if [ -n "${{ github.event.inputs.tag }}" ]; then
             SELECTED_TAG="${{ github.event.inputs.tag }}"
-            echo "Using specified tag: $SELECTED_TAG"
-            git clone --depth 1 --branch "$SELECTED_TAG" "$AUTH_URL" "$SOURCE_DIR"
           else
-            git clone "$AUTH_URL" "$SOURCE_DIR"
-            cd "$SOURCE_DIR"
-            
-            git fetch --tags
-            LATEST_TAG=$(git tag --sort=-creatordate | head -1)
-            
-            if [ -z "$LATEST_TAG" ]; then
-              echo "ERROR: No tags found in source repository"
-              exit 1
-            fi
-            
-            SELECTED_TAG="$LATEST_TAG"
-            echo "Using latest tag: $SELECTED_TAG"
-            git checkout "$SELECTED_TAG"
+            SELECTED_TAG=$(git tag --sort=-creatordate | head -1)
           fi
 
-          cd "$SOURCE_DIR"
-          echo "Current checked out commit: $(git rev-parse HEAD)"
-          echo "Current tag: $(git describe --tags)"
-          
+          # 4. 切换到正确 tag
+          git checkout "$SELECTED_TAG"
+
+          # 5. 输出结果
           echo "SELECTED_TAG=$SELECTED_TAG" >> $GITHUB_OUTPUT
 
       - name: Extract version from tag
@@ -76,13 +67,12 @@ jobs:
           VERSION="${TAG#v}"
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
           echo "TAG=$TAG" >> $GITHUB_OUTPUT
-          echo "Building version: $VERSION (tag: $TAG)"
 
-      - name: Upload source for downstream jobs
+      - name: Upload source
         uses: actions/upload-artifact@v4
         with:
           name: source-code
-          path: ${{ env.SOURCE_DIR }}
+          path: source
           retention-days: 1
 
   build-macos-arm64:
@@ -95,7 +85,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: source-code
-          path: ${{ env.SOURCE_DIR }}
+          path: source
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -111,200 +101,139 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ steps.npm-cache.outputs.DIR }}
-          key: ${{ runner.os }}-npm-arm64-${{ hashFiles(format('{0}/package.json', env.SOURCE_DIR)) }}
+          key: ${{ runner.os }}-npm-arm64-${{ hashFiles('source/package.json') }}
           restore-keys: ${{ runner.os }}-npm-arm64-
 
-      - name: Install frontend dependencies
-        working-directory: ${{ env.SOURCE_DIR }}
+      - name: Install dependencies
+        working-directory: source
         run: npm install
 
-      - name: Install macOS system dependencies
+      - name: Install macOS dependencies
         run: |
           brew install libpq mysql-client openssl@3
-          echo "PKG_CONFIG_PATH=$(brew --prefix libpq)/lib/pkgconfig:$(brew --prefix mysql-client)/lib/pkgconfig:$(brew --prefix openssl@3)/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" >> $GITHUB_ENV
+          echo "PKG_CONFIG_PATH=$(brew --prefix libpq)/lib/pkgconfig:$(brew --prefix mysql-client)/lib/pkgconfig:$(brew --prefix openssl@3)/lib/pkgconfig" >> $GITHUB_ENV
 
-      - name: Setup Rust toolchain
+      - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin
 
-      - name: Rust cargo cache
+      - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: ${{ env.SOURCE_DIR }}/src-tauri -> target
-          shared-key: macos-arm64
+          workspaces: source/src-tauri -> target
 
-      - name: Inject version and patch build command in tauri.conf.json
-        working-directory: ${{ env.SOURCE_DIR }}
+      - name: Patch version
+        working-directory: source
         run: |
           VERSION="${{ needs.determine-version.outputs.version }}"
           jq --arg v "$VERSION" \
-            '.version = $v
-             | .productName = ("AIPCowork-" + $v)
-             | .build.beforeBuildCommand = (.build.beforeBuildCommand | gsub("pnpm build"; "npm run build"))
-             | .build.beforeDevCommand = (.build.beforeDevCommand | gsub("pnpm dev"; "npm run dev"))' \
-            src-tauri/tauri.conf.json > src-tauri/tauri.conf.tmp.json && \
-            mv src-tauri/tauri.conf.tmp.json src-tauri/tauri.conf.json
+            '.version = $v | .productName = "AIPCowork-$v" | .build.beforeBuildCommand = "npm run build" | .build.beforeDevCommand = "npm run dev"' \
+            src-tauri/tauri.conf.json > tmp.json && mv tmp.json src-tauri/tauri.conf.json
 
-      - name: Build Tauri app
-        working-directory: ${{ env.SOURCE_DIR }}
-        shell: bash
+      - name: Build
+        working-directory: source
         run: |
           export CFLAGS="-arch arm64"
           export OPENSSL_STATIC=1
-          export OPENSSL_VENDORED=1
-          export CC="clang"
-          export AR="ar"
           npx tauri build --target aarch64-apple-darwin
 
-      - name: Upload DMG installer
+      - name: Upload DMG
         uses: actions/upload-artifact@v4
         with:
-          name: AIPCowork-${{ needs.determine-version.outputs.version }}-macOS-arm64-dmg
-          path: ${{ env.SOURCE_DIR }}/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
-          if-no-files-found: warn
+          name: AIPCowork-macOS-arm64
+          path: source/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
 
-      - name: Upload .app bundle
-        uses: actions/upload-artifact@v4
-        with:
-          name: AIPCowork-${{ needs.determine-version.outputs.version }}-macOS-arm64-app
-          path: ${{ env.SOURCE_DIR }}/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app
-          if-no-files-found: warn
-
-      - name: Install qshell
-        run: brew install qshell
-
-      - name: Upload macOS DMG to Qiniu
+      - name: Upload to Qiniu
         run: |
-          qshell account "${{ secrets.QINIU_ACCESS_KEY }}" "${{ secrets.QINIU_SECRET_KEY }}" "github-action"
-          DMG_PATH=$(ls ${{ env.SOURCE_DIR }}/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg)
-          SAVE_NAME="${{ env.QINIU_DIR }}AIPCowork-latest-macOS-arm64.dmg" 
-          qshell rput --overwrite ${{ env.QINIU_BUCKET }} "$SAVE_NAME" "$DMG_PATH"
-          echo "✅ 上传成功：https://${{ env.QINIU_DOMAIN }}/$SAVE_NAME"
+          brew install qshell
+          qshell account "${{ secrets.QINIU_ACCESS_KEY }}" "${{ secrets.QINIU_SECRET_KEY }}"
+          DMG=$(ls source/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg)
+          qshell rput --overwrite ${{ env.QINIU_BUCKET }} "${{ env.QINIU_DIR }}AIPCowork-latest-macOS-arm64.dmg" "$DMG"
 
   build-windows:
     needs: [determine-version]
-    name: Windows (x86_64)
+    name: Windows (x64)
     runs-on: windows-latest
 
     steps:
-      - name: Download source code
+      - name: Download source
         uses: actions/download-artifact@v4
         with:
           name: source-code
-          path: ${{ env.SOURCE_DIR }}
+          path: source
 
-      - name: Setup Node.js
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
 
-      - name: Get npm cache directory
-        id: npm-cache
-        shell: bash
-        run: echo "DIR=$(npm config get cache)" >> $GITHUB_OUTPUT
-
-      - name: Cache npm dependencies
+      - name: Cache npm
         uses: actions/cache@v4
         with:
-          path: ${{ steps.npm-cache.outputs.DIR }}
-          key: ${{ runner.os }}-npm-${{ hashFiles(format('{0}/package.json', env.SOURCE_DIR)) }}
-          restore-keys: ${{ runner.os }}-npm-
+          path: ~/.npm
+          key: ${{ runner.os }}-npm-${{ hashFiles('source/package.json') }}
 
-      - name: Install frontend dependencies
-        working-directory: ${{ env.SOURCE_DIR }}
+      - name: Install dependencies
+        working-directory: source
         run: npm install
 
-      - name: Install OpenSSL via vcpkg
+      - name: Install OpenSSL
         run: |
-          vcpkg integrate install
           vcpkg install openssl:x64-windows-static
 
-      - name: Setup Rust toolchain
+      - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
 
-      - name: Rust cargo cache
+      - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: ${{ env.SOURCE_DIR }}/src-tauri -> target
+          workspaces: source/src-tauri -> target
 
-      - name: Inject version and patch build command in tauri.conf.json
-        working-directory: ${{ env.SOURCE_DIR }}
+      - name: Patch version
+        working-directory: source
         shell: bash
         run: |
           VERSION="${{ needs.determine-version.outputs.version }}"
-          jq --arg v "$VERSION" \
-            '.version = $v
-             | .productName = ("AIPCowork-" + $v)
-             | .build.beforeBuildCommand = (.build.beforeBuildCommand | gsub("pnpm build"; "npm run build"))
-             | .build.beforeDevCommand = (.build.beforeDevCommand | gsub("pnpm dev"; "npm run dev"))' \
-            src-tauri/tauri.conf.json > src-tauri/tauri.conf.tmp.json && \
-            mv src-tauri/tauri.conf.tmp.json src-tauri/tauri.conf.json
+          jq --arg v "$VERSION" '.version = $v | .productName = "AIPCowork-$v"' src-tauri/tauri.conf.json > tmp.json && mv tmp.json src-tauri/tauri.conf.json
 
-      - name: Build Tauri app
-        working-directory: ${{ env.SOURCE_DIR }}
+      - name: Build
+        working-directory: source
         env:
           OPENSSL_DIR: C:\vcpkg\installed\x64-windows-static
-          OPENSSL_STATIC: '1'
+          OPENSSL_STATIC: 1
         run: npx tauri build --target x86_64-pc-windows-msvc
 
-      - name: Upload NSIS installer
+      - name: Upload EXE
         uses: actions/upload-artifact@v4
         with:
-          name: AIPCowork-${{ needs.determine-version.outputs.version }}-Windows-x64-installer
-          path: ${{ env.SOURCE_DIR }}/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
-          if-no-files-found: warn
+          name: AIPCowork-Windows-x64
+          path: source/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
 
-      - name: Upload MSI installer
-        uses: actions/upload-artifact@v4
-        with:
-          name: AIPCowork-${{ needs.determine-version.outputs.version }}-Windows-x64-msi
-          path: ${{ env.SOURCE_DIR }}/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
-          if-no-files-found: warn
-
-      - name: Install qshell (Windows)
+      - name: Upload to Qiniu
         run: |
           curl -L https://github.com/qiniu/qshell/releases/download/v2.18.0/qshell-v2.18.0-windows-amd64.zip -o qshell.zip
           powershell -Command "Expand-Archive qshell.zip -DestinationPath C:\Windows"
-          qshell version
-
-      - name: Upload Windows EXE to Qiniu
-        run: |
-          qshell account "${{ secrets.QINIU_ACCESS_KEY }}" "${{ secrets.QINIU_SECRET_KEY }}" "github-action"
-          $exe = Get-ChildItem "${{ env.SOURCE_DIR }}/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe" | Select-Object -First 1
-          $SAVE_NAME = "${{ env.QINIU_DIR }}AIPCowork-latest-Windows-x64.exe"
-          qshell rput --overwrite ${{ env.QINIU_BUCKET }} $SAVE_NAME $exe.FullName
-          echo "✅ 上传成功：https://${{ env.QINIU_DOMAIN }}/$SAVE_NAME"
+          qshell account "${{ secrets.QINIU_ACCESS_KEY }}" "${{ secrets.QINIU_SECRET_KEY }}"
+          $exe = Get-ChildItem "source/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe" | Select-Object -First 1
+          qshell rput --overwrite ${{ env.QINIU_BUCKET }} "${{ env.QINIU_DIR }}AIPCowork-latest-Windows-x64.exe" $exe.FullName
 
   release:
-    name: Create Release
     needs: [determine-version, build-macos-arm64, build-windows]
     runs-on: ubuntu-latest
-
     steps:
-      - name: Download all build artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           path: artifacts
-
-      - name: List artifacts
-        run: |
-          echo "=== Build Artifacts ==="
-          find artifacts -type f | sort
-
-      - name: Create GitHub Release
+      - name: Create release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.determine-version.outputs.tag }}
           name: AIPCowork ${{ needs.determine-version.outputs.version }}
           draft: true
           generate_release_notes: true
-          files: |
-            artifacts/**/*.dmg
-            artifacts/**/*.exe
-            artifacts/**/*.msi
-          fail_on_unmatched_files: false
+          files: artifacts/**/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
