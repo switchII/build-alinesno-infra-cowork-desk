@@ -174,7 +174,7 @@ jobs:
           qshell account "${{ secrets.QINIU_ACCESS_KEY }}" "${{ secrets.QINIU_SECRET_KEY }}" "github-action"
           
           DMG_PATH=$(ls ${{ env.SOURCE_DIR }}/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg)
-          SAVE_NAME="${{ env.QINIU_DIR }}AIPCowork-latest-macOS-arm64.dmg" 
+          SAVE_NAME="${{ env.QINIU_DIR }}Cowork-latest-macOS-arm64.dmg" 
           
           qshell rput --overwrite ${{ env.QINIU_BUCKET }} "$SAVE_NAME" "$DMG_PATH"
           echo "✅ 上传成功：https://${{ env.QINIU_DOMAIN }}/$SAVE_NAME"
@@ -275,7 +275,7 @@ jobs:
           qshell account "${{ secrets.QINIU_ACCESS_KEY }}" "${{ secrets.QINIU_SECRET_KEY }}" "github-action"
           
           $exe = Get-ChildItem "${{ env.SOURCE_DIR }}/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe" | Select-Object -First 1
-          $SAVE_NAME = "${{ env.QINIU_DIR }}AIPCowork-latest-Windows-x64.exe"
+          $SAVE_NAME = "${{ env.QINIU_DIR }}Cowork-latest-Windows-x64.exe"
           
           qshell rput --overwrite ${{ env.QINIU_BUCKET }} $SAVE_NAME $exe.FullName
           echo "✅ 上传成功：https://${{ env.QINIU_DOMAIN }}/$SAVE_NAME"
