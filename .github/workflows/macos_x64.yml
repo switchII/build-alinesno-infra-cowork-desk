@@ -89,28 +89,30 @@ jobs:
         with:
           name: AIPCowork-${{ env.VERSION }}-macOS-x64-app
           path: ${{ env.SOURCE_DIR }}/src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.app
-
-      # 修复：通过 Homebrew 安装 qshell（替代失效的旧下载链接）
-      - name: Install qshell via Homebrew
+ 
+      # ===================== 修复版：七牛云上传 =====================
+      - name: Install qshell
         run: |
           brew install qshell
-          qshell version
-
-      # 上传 DMG 到七牛云，文件后缀固定为 latest
-      - name: Upload to Qiniu Cloud (latest)
+          qshell -v
+      
+      - name: Upload to Qiniu (latest)
         run: |
-          # 登录七牛账号
-          qshell account ${{ secrets.QINIU_ACCESS_KEY }} ${{ secrets.QINIU_SECRET_KEY }}
+          # 方法：直接用环境变量配置七牛，最稳定，不会出现 Name can't be empty
+          export QINIU_ACCESS_KEY="${{ secrets.QINIU_ACCESS_KEY }}"
+          export QINIU_SECRET_KEY="${{ secrets.QINIU_SECRET_KEY }}"
           
-          # 匹配编译产出的 DMG 文件
-          DMG_SOURCE="${{ env.SOURCE_DIR }}/src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/"*.dmg
-          # 固定 latest 文件名
-          QINIU_KEY="AIPCowork-latest-macOS-x64.dmg"
+          # 源文件
+          DMG_PATH=$(ls ${{ env.SOURCE_DIR }}/src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg)
           
-          # 强制覆盖已存在的 latest 文件
-          qshell rput --overwrite ${{ env.QINIU_BUCKET }} "$QINIU_KEY" $DMG_SOURCE
+          # 上传文件名（固定 latest）
+          SAVE_NAME="AIPCowork-latest-macOS-x64.dmg"
           
-          echo "✅ 最新版下载链接: https://${{ env.QINIU_DOMAIN }}/$QINIU_KEY"
+          # 上传（强制覆盖）
+          qshell rput --overwrite ${{ secrets.QINIU_BUCKET }} $SAVE_NAME $DMG_PATH
+          
+          echo "✅ 上传成功：https://${{ secrets.QINIU_DOMAIN }}/$SAVE_NAME"
+      # ============================================================
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
