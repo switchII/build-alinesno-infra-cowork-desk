@@ -35,32 +35,29 @@ jobs:
         id: clone-tag
         shell: bash
         run: |
+          # 直接使用 Secret 中的完整 URL，不要在这里手动处理协议头 
           REPO="${{ secrets.COWORK_GIT_REPOSITORY_URL }}"
-          # 清理 URL...
-          AUTH_URL="https://${{ secrets.COWORK_GIT_REPOSITORY_USER }}:${{ secrets.COWORK_GIT_REPOSITORY_PASSWORD }}@${REPO}"
-
-          # 1. 初始化并拉取最新状态
-          git init source
+          REPO="${REPO#https://}"
+          REPO="${REPO#http://}"
+          REPO_URL="https://${{ secrets.COWORK_GIT_REPOSITORY_USER }}:${{ secrets.COWORK_GIT_REPOSITORY_PASSWORD }}@${REPO}"
+          
+          # 确保 URL 包含鉴权信息 (如果 Secret 中只存了域名，则需要拼接)
+          # 建议将 COWORK_GIT_REPOSITORY_URL 直接存为：https://user:password@github.com/org/repo.git
+          git clone "$REPO_URL" source
+          
           cd source
-          git remote add origin "$AUTH_URL"
           
-          # 关键点：强制获取所有分支和所有 tags 的最新信息
-          git fetch --all --tags --force
+          # 获取 tag
+          git fetch --tags --force
           
-          # 2. 逻辑判断选定的 tag
           if [ -n "${{ github.event.inputs.tag }}" ]; then
             SELECTED_TAG="${{ github.event.inputs.tag }}"
           else
-            # 使用 git ls-remote 获取远程最新的 tag，确保不依赖本地缓存
-            SELECTED_TAG=$(git ls-remote --tags --sort=-v:refname origin | head -n 1 | cut -d/ -f3)
+            # 获取最新 tag 的更安全写法
+            SELECTED_TAG=$(git describe --tags $(git rev-list --tags --max-count=1))
           fi
           
-          echo "Selected Tag: $SELECTED_TAG"
-          
-          # 3. 切换到对应 tag
-          git checkout tags/"$SELECTED_TAG"
-          
-          # 4. 输出结果
+          git checkout "$SELECTED_TAG"
           echo "SELECTED_TAG=$SELECTED_TAG" >> $GITHUB_OUTPUT
 
       - name: Extract version from tag
