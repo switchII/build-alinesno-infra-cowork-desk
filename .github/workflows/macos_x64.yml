@@ -99,7 +99,13 @@ jobs:
           qshell account "${{ secrets.QINIU_ACCESS_KEY }}" "${{ secrets.QINIU_SECRET_KEY }}" "github-action"
           
           DMG_PATH=$(ls ${{ env.SOURCE_DIR }}/src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg)
-          SAVE_NAME="AIPCowork-latest-macOS-x64.dmg"
+
+          # =============== 在这里修改你要上传的七牛目录 ===============
+          QINIU_DIR="aip-cowork-releases/"  # 结尾必须带 /
+          # ============================================================
+          
+          # 最终保存的文件名（目录+文件名）
+          SAVE_NAME="${QINIU_DIR}AIPCowork-latest-macOS-x64.dmg" 
           
           qshell rput --overwrite ${{ secrets.QINIU_BUCKET }} "$SAVE_NAME" "$DMG_PATH"
           echo "✅ 上传成功：https://${{ secrets.QINIU_DOMAIN }}/$SAVE_NAME"
