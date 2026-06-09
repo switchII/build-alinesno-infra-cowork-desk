@@ -85,7 +85,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: source-code
-          path: source
+          path: ${{ env.SOURCE_DIR }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -101,139 +101,209 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ steps.npm-cache.outputs.DIR }}
-          key: ${{ runner.os }}-npm-arm64-${{ hashFiles('source/package.json') }}
+          key: ${{ runner.os }}-npm-arm64-${{ hashFiles(format('{0}/package.json', env.SOURCE_DIR)) }}
           restore-keys: ${{ runner.os }}-npm-arm64-
 
-      - name: Install dependencies
-        working-directory: source
+      - name: Install frontend dependencies
+        working-directory: ${{ env.SOURCE_DIR }}
         run: npm install
 
-      - name: Install macOS dependencies
+      - name: Install macOS system dependencies
         run: |
           brew install libpq mysql-client openssl@3
-          echo "PKG_CONFIG_PATH=$(brew --prefix libpq)/lib/pkgconfig:$(brew --prefix mysql-client)/lib/pkgconfig:$(brew --prefix openssl@3)/lib/pkgconfig" >> $GITHUB_ENV
+          echo "PKG_CONFIG_PATH=$(brew --prefix libpq)/lib/pkgconfig:$(brew --prefix mysql-client)/lib/pkgconfig:$(brew --prefix openssl@3)/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" >> $GITHUB_ENV
 
-      - name: Setup Rust
+      - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin
 
-      - name: Rust cache
+      - name: Rust cargo cache
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: source/src-tauri -> target
+          workspaces: ${{ env.SOURCE_DIR }}/src-tauri -> target
+          shared-key: macos-arm64
 
-      - name: Patch version
-        working-directory: source
+      - name: Inject version and patch build command in tauri.conf.json
+        working-directory: ${{ env.SOURCE_DIR }}
         run: |
           VERSION="${{ needs.determine-version.outputs.version }}"
           jq --arg v "$VERSION" \
-            '.version = $v | .productName = "AIPCowork-$v" | .build.beforeBuildCommand = "npm run build" | .build.beforeDevCommand = "npm run dev"' \
-            src-tauri/tauri.conf.json > tmp.json && mv tmp.json src-tauri/tauri.conf.json
+            '.version = $v
+             | .productName = ("AIPCowork-" + $v)
+             | .build.beforeBuildCommand = (.build.beforeBuildCommand | gsub("pnpm build"; "npm run build"))
+             | .build.beforeDevCommand = (.build.beforeDevCommand | gsub("pnpm dev"; "npm run dev"))' \
+            src-tauri/tauri.conf.json > src-tauri/tauri.conf.tmp.json && \
+            mv src-tauri/tauri.conf.tmp.json src-tauri/tauri.conf.json
 
-      - name: Build
-        working-directory: source
+      - name: Build Tauri app
+        working-directory: ${{ env.SOURCE_DIR }}
+        shell: bash
         run: |
           export CFLAGS="-arch arm64"
           export OPENSSL_STATIC=1
+          export OPENSSL_VENDORED=1
+          export CC="clang"
+          export AR="ar"
           npx tauri build --target aarch64-apple-darwin
 
-      - name: Upload DMG
+      - name: Upload DMG installer
         uses: actions/upload-artifact@v4
         with:
-          name: AIPCowork-macOS-arm64
-          path: source/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+          name: AIPCowork-${{ needs.determine-version.outputs.version }}-macOS-arm64-dmg
+          path: ${{ env.SOURCE_DIR }}/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+          if-no-files-found: warn
 
-      - name: Upload to Qiniu
+      - name: Upload .app bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: AIPCowork-${{ needs.determine-version.outputs.version }}-macOS-arm64-app
+          path: ${{ env.SOURCE_DIR }}/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app
+          if-no-files-found: warn
+
+      # ===================== 七牛上传 macOS Arm64 =====================
+      - name: Install qshell
+        run: brew install qshell
+
+      - name: Upload macOS DMG to Qiniu
         run: |
-          brew install qshell
-          qshell account "${{ secrets.QINIU_ACCESS_KEY }}" "${{ secrets.QINIU_SECRET_KEY }}"
-          DMG=$(ls source/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg)
-          qshell rput --overwrite ${{ env.QINIU_BUCKET }} "${{ env.QINIU_DIR }}AIPCowork-latest-macOS-arm64.dmg" "$DMG"
+          qshell account "${{ secrets.QINIU_ACCESS_KEY }}" "${{ secrets.QINIU_SECRET_KEY }}" "github-action"
+          
+          DMG_PATH=$(ls ${{ env.SOURCE_DIR }}/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg)
+          SAVE_NAME="${{ env.QINIU_DIR }}AIPCowork-latest-macOS-arm64.dmg" 
+          
+          qshell rput --overwrite ${{ env.QINIU_BUCKET }} "$SAVE_NAME" "$DMG_PATH"
+          echo "✅ 上传成功：https://${{ env.QINIU_DOMAIN }}/$SAVE_NAME"
+      # =================================================================
 
   build-windows:
     needs: [determine-version]
-    name: Windows (x64)
+    name: Windows (x86_64)
     runs-on: windows-latest
 
     steps:
-      - name: Download source
+      - name: Download source code
         uses: actions/download-artifact@v4
         with:
           name: source-code
-          path: source
+          path: ${{ env.SOURCE_DIR }}
 
-      - name: Setup Node
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
 
-      - name: Cache npm
+      - name: Get npm cache directory
+        id: npm-cache
+        shell: bash
+        run: echo "DIR=$(npm config get cache)" >> $GITHUB_OUTPUT
+
+      - name: Cache npm dependencies
         uses: actions/cache@v4
         with:
-          path: ~/.npm
-          key: ${{ runner.os }}-npm-${{ hashFiles('source/package.json') }}
+          path: ${{ steps.npm-cache.outputs.DIR }}
+          key: ${{ runner.os }}-npm-${{ hashFiles(format('{0}/package.json', env.SOURCE_DIR)) }}
+          restore-keys: ${{ runner.os }}-npm-
 
-      - name: Install dependencies
-        working-directory: source
+      - name: Install frontend dependencies
+        working-directory: ${{ env.SOURCE_DIR }}
         run: npm install
 
-      - name: Install OpenSSL
+      - name: Install OpenSSL via vcpkg
         run: |
+          vcpkg integrate install
           vcpkg install openssl:x64-windows-static
 
-      - name: Setup Rust
+      - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
 
-      - name: Rust cache
+      - name: Rust cargo cache
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: source/src-tauri -> target
+          workspaces: ${{ env.SOURCE_DIR }}/src-tauri -> target
 
-      - name: Patch version
-        working-directory: source
+      - name: Inject version and patch build command in tauri.conf.json
+        working-directory: ${{ env.SOURCE_DIR }}
         shell: bash
         run: |
           VERSION="${{ needs.determine-version.outputs.version }}"
-          jq --arg v "$VERSION" '.version = $v | .productName = "AIPCowork-$v"' src-tauri/tauri.conf.json > tmp.json && mv tmp.json src-tauri/tauri.conf.json
+          echo "Setting version to: $VERSION"
+          jq --arg v "$VERSION" \
+            '.version = $v
+             | .productName = ("AIPCowork-" + $v)
+             | .build.beforeBuildCommand = (.build.beforeBuildCommand | gsub("pnpm build"; "npm run build"))
+             | .build.beforeDevCommand = (.build.beforeDevCommand | gsub("pnpm dev"; "npm run dev"))' \
+            src-tauri/tauri.conf.json > src-tauri/tauri.conf.tmp.json && \
+            mv src-tauri/tauri.conf.tmp.json src-tauri/tauri.conf.json
 
-      - name: Build
-        working-directory: source
+      - name: Build Tauri app
+        working-directory: ${{ env.SOURCE_DIR }}
         env:
           OPENSSL_DIR: C:\vcpkg\installed\x64-windows-static
-          OPENSSL_STATIC: 1
+          OPENSSL_STATIC: '1'
         run: npx tauri build --target x86_64-pc-windows-msvc
 
-      - name: Upload EXE
+      - name: Upload NSIS installer
         uses: actions/upload-artifact@v4
         with:
-          name: AIPCowork-Windows-x64
-          path: source/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+          name: AIPCowork-${{ needs.determine-version.outputs.version }}-Windows-x64-installer
+          path: ${{ env.SOURCE_DIR }}/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+          if-no-files-found: warn
 
-      - name: Upload to Qiniu
+      - name: Upload MSI installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: AIPCowork-${{ needs.determine-version.outputs.version }}-Windows-x64-msi
+          path: ${{ env.SOURCE_DIR }}/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
+          if-no-files-found: warn
+
+      # ===================== 七牛上传 Windows x64 =====================
+      - name: Install qshell (Windows)
         run: |
           curl -L https://github.com/qiniu/qshell/releases/download/v2.18.0/qshell-v2.18.0-windows-amd64.zip -o qshell.zip
           powershell -Command "Expand-Archive qshell.zip -DestinationPath C:\Windows"
-          qshell account "${{ secrets.QINIU_ACCESS_KEY }}" "${{ secrets.QINIU_SECRET_KEY }}"
-          $exe = Get-ChildItem "source/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe" | Select-Object -First 1
-          qshell rput --overwrite ${{ env.QINIU_BUCKET }} "${{ env.QINIU_DIR }}AIPCowork-latest-Windows-x64.exe" $exe.FullName
+          qshell version
+
+      - name: Upload Windows EXE to Qiniu
+        run: |
+          qshell account "${{ secrets.QINIU_ACCESS_KEY }}" "${{ secrets.QINIU_SECRET_KEY }}" "github-action"
+          
+          $exe = Get-ChildItem "${{ env.SOURCE_DIR }}/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe" | Select-Object -First 1
+          $SAVE_NAME = "${{ env.QINIU_DIR }}AIPCowork-latest-Windows-x64.exe"
+          
+          qshell rput --overwrite ${{ env.QINIU_BUCKET }} $SAVE_NAME $exe.FullName
+          echo "✅ 上传成功：https://${{ env.QINIU_DOMAIN }}/$SAVE_NAME"
+      # =================================================================
 
   release:
+    name: Create Release
     needs: [determine-version, build-macos-arm64, build-windows]
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/download-artifact@v4
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
         with:
           path: artifacts
-      - name: Create release
+
+      - name: List artifacts
+        run: |
+          echo "=== Build Artifacts ==="
+          find artifacts -type f | sort
+
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.determine-version.outputs.tag }}
           name: AIPCowork ${{ needs.determine-version.outputs.version }}
           draft: true
           generate_release_notes: true
-          files: artifacts/**/*
+          files: |
+            artifacts/**/*.dmg
+            artifacts/**/*.exe
+            artifacts/**/*.msi
+          fail_on_unmatched_files: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
