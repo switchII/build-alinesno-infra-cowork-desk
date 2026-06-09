@@ -20,6 +20,7 @@ env:
   SOURCE_DIR: source
   QINIU_BUCKET: ${{ secrets.QINIU_BUCKET }}
   QINIU_DOMAIN: ${{ secrets.QINIU_DOMAIN }}
+  QINIU_DIR: aip-cowork-releases/
 
 jobs:
   determine-version:
@@ -169,14 +170,15 @@ jobs:
       - name: Install qshell
         run: brew install qshell
 
-      - name: Upload macOS DMG to Qiniu (latest)
+      - name: Upload macOS DMG to Qiniu
         run: |
-          export QINIU_ACCESS_KEY="${{ secrets.QINIU_ACCESS_KEY }}"
-          export QINIU_SECRET_KEY="${{ secrets.QINIU_SECRET_KEY }}"
-          DMG=$(ls ${{ env.SOURCE_DIR }}/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg)
-          SAVE="AIPCowork-latest-macOS-arm64.dmg"
-          qshell rput --overwrite ${{ env.QINIU_BUCKET }} "$SAVE" "$DMG"
-          echo "✅ macOS Arm64 最新版：https://${{ env.QINIU_DOMAIN }}/$SAVE"
+          qshell account "${{ secrets.QINIU_ACCESS_KEY }}" "${{ secrets.QINIU_SECRET_KEY }}" "github-action"
+          
+          DMG_PATH=$(ls ${{ env.SOURCE_DIR }}/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg)
+          SAVE_NAME="${{ env.QINIU_DIR }}AIPCowork-latest-macOS-arm64.dmg" 
+          
+          qshell rput --overwrite ${{ env.QINIU_BUCKET }} "$SAVE_NAME" "$DMG_PATH"
+          echo "✅ 上传成功：https://${{ env.QINIU_DOMAIN }}/$SAVE_NAME"
       # =================================================================
 
   build-windows:
@@ -269,13 +271,15 @@ jobs:
           powershell -Command "Expand-Archive qshell.zip -DestinationPath C:\Windows"
           qshell version
 
-      - name: Upload Windows EXE to Qiniu (latest)
+      - name: Upload Windows EXE to Qiniu
         run: |
-          $env:QINIU_ACCESS_KEY="${{ secrets.QINIU_ACCESS_KEY }}"
-          $env:QINIU_SECRET_KEY="${{ secrets.QINIU_SECRET_KEY }}"
+          qshell account "${{ secrets.QINIU_ACCESS_KEY }}" "${{ secrets.QINIU_SECRET_KEY }}" "github-action"
+          
           $exe = Get-ChildItem "${{ env.SOURCE_DIR }}/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe" | Select-Object -First 1
-          qshell rput --overwrite ${{ env.QINIU_BUCKET }} "AIPCowork-latest-Windows-x64.exe" $exe.FullName
-          echo "✅ Windows x64 最新版：https://${{ env.QINIU_DOMAIN }}/AIPCowork-latest-Windows-x64.exe"
+          $SAVE_NAME = "${{ env.QINIU_DIR }}AIPCowork-latest-Windows-x64.exe"
+          
+          qshell rput --overwrite ${{ env.QINIU_BUCKET }} $SAVE_NAME $exe.FullName
+          echo "✅ 上传成功：https://${{ env.QINIU_DOMAIN }}/$SAVE_NAME"
       # =================================================================
 
   release:
