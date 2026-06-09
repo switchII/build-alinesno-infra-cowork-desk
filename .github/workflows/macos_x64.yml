@@ -1,0 +1,100 @@
+name: build mac-os x64 (intel)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '指定 Git tag（留空用最新）'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+  actions: read
+
+env:
+  NODE_VERSION: 24
+  SOURCE_DIR: source
+
+jobs:
+  build-macos-x64:
+    name: Build macOS x64
+    runs-on: macos-latest # 最新可用系统，已完美支持 x64 编译
+    steps:
+      - name: Checkout source code
+        run: |
+          REPO="${{ secrets.COWORK_GIT_REPOSITORY_URL }}"
+          REPO="${REPO#https://}"
+          REPO="${REPO#http://}"
+
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            SELECTED_TAG="${{ github.event.inputs.tag }}"
+            git clone --depth 1 --branch "$SELECTED_TAG" "https://${{ secrets.COWORK_GIT_REPOSITORY_USER }}:${{ secrets.COWORK_GIT_REPOSITORY_PASSWORD }}@${REPO}" ${{ env.SOURCE_DIR }}
+          else
+            git clone --depth 1 "https://${{ secrets.COWORK_GIT_REPOSITORY_USER }}:${{ secrets.COWORK_GIT_REPOSITORY_PASSWORD }}@${REPO}" ${{ env.SOURCE_DIR }}
+            cd ${{ env.SOURCE_DIR }}
+            git fetch --tags
+            LATEST_TAG=$(git tag --sort=-creatordate | head -1)
+            git checkout "$LATEST_TAG"
+            SELECTED_TAG="$LATEST_TAG"
+          fi
+          echo "SELECTED_TAG=$SELECTED_TAG" >> $GITHUB_ENV
+          echo "VERSION=${SELECTED_TAG#v}" >> $GITHUB_ENV
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install dependencies
+        working-directory: ${{ env.SOURCE_DIR }}
+        run: npm install
+
+      - name: Install macOS dependencies
+        run: |
+          brew install libpq mysql-client openssl@3
+          echo "PKG_CONFIG_PATH=$(brew --prefix libpq)/lib/pkgconfig:$(brew --prefix mysql-client)/lib/pkgconfig:$(brew --prefix openssl@3)/lib/pkgconfig" >> $GITHUB_ENV
+
+      - name: Setup Rust (x64)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
+
+      - name: Patch tauri.conf.json
+        working-directory: ${{ env.SOURCE_DIR }}
+        run: |
+          VERSION=${{ env.VERSION }}
+          jq --arg v "$VERSION" \
+            '.version = $v | .productName = "AIPCowork-$v" | .build.beforeBuildCommand = "npm run build" | .build.beforeDevCommand = "npm run dev"' \
+            src-tauri/tauri.conf.json > tmp.json && mv tmp.json src-tauri/tauri.conf.json
+
+      - name: Build Tauri macOS x64
+        working-directory: ${{ env.SOURCE_DIR }}
+        run: |
+          export CFLAGS="-arch x86_64"
+          export OPENSSL_STATIC=1
+          npx tauri build --target x86_64-apple-darwin
+
+      - name: Upload DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: AIPCowork-${{ env.VERSION }}-macOS-x64-dmg
+          path: ${{ env.SOURCE_DIR }}/src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
+
+      - name: Upload APP
+        uses: actions/upload-artifact@v4
+        with:
+          name: AIPCowork-${{ env.VERSION }}-macOS-x64-app
+          path: ${{ env.SOURCE_DIR }}/src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.app
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.SELECTED_TAG }}
+          name: AIPCowork ${{ env.VERSION }} (macOS x64)
+          draft: true
+          files: |
+            ${{ env.SOURCE_DIR }}/src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
+            ${{ env.SOURCE_DIR }}/src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.app
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
