@@ -199,14 +199,14 @@ jobs:
       - name: Upload DMG installer
         uses: actions/upload-artifact@v4
         with:
-          name: AIPCowork-${{ needs.determine-version.outputs.version }}-macOS-arm64-dmg
+          name: Cowork-${{ needs.determine-version.outputs.version }}-macOS-arm64-dmg
           path: ${{ env.SOURCE_DIR }}/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
           if-no-files-found: warn
 
       - name: Upload .app bundle
         uses: actions/upload-artifact@v4
         with:
-          name: AIPCowork-${{ needs.determine-version.outputs.version }}-macOS-arm64-app
+          name: Cowork-${{ needs.determine-version.outputs.version }}-macOS-arm64-app
           path: ${{ env.SOURCE_DIR }}/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app
           if-no-files-found: warn
 
@@ -281,7 +281,7 @@ jobs:
           echo "Setting version to: $VERSION"
           jq --arg v "$VERSION" \
             '.version = $v
-             | .productName = ("AIPCowork-" + $v)
+             | .productName = ("Cowork-" + $v)
              | .build.beforeBuildCommand = (.build.beforeBuildCommand | gsub("pnpm build"; "npm run build"))
              | .build.beforeDevCommand = (.build.beforeDevCommand | gsub("pnpm dev"; "npm run dev"))' \
             src-tauri/tauri.conf.json > src-tauri/tauri.conf.tmp.json && \
@@ -297,14 +297,14 @@ jobs:
       - name: Upload NSIS installer
         uses: actions/upload-artifact@v4
         with:
-          name: AIPCowork-${{ needs.determine-version.outputs.version }}-Windows-x64-installer
+          name: Cowork-${{ needs.determine-version.outputs.version }}-Windows-x64-installer
           path: ${{ env.SOURCE_DIR }}/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
           if-no-files-found: warn
 
       - name: Upload MSI installer
         uses: actions/upload-artifact@v4
         with:
-          name: AIPCowork-${{ needs.determine-version.outputs.version }}-Windows-x64-msi
+          name: Cowork-${{ needs.determine-version.outputs.version }}-Windows-x64-msi
           path: ${{ env.SOURCE_DIR }}/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
           if-no-files-found: warn
 
@@ -346,7 +346,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.determine-version.outputs.tag }}
-          name: AIPCowork ${{ needs.determine-version.outputs.version }}
+          name: Cowork ${{ needs.determine-version.outputs.version }}
           draft: true
           generate_release_notes: true
           files: |
