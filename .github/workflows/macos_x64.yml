@@ -15,7 +15,6 @@ permissions:
 env:
   NODE_VERSION: 24
   SOURCE_DIR: source
-  # 七牛云配置（在仓库 Actions Secrets 中配置）
   QINIU_BUCKET: ${{ secrets.QINIU_BUCKET }}
   QINIU_DOMAIN: ${{ secrets.QINIU_DOMAIN }}
 
@@ -89,30 +88,22 @@ jobs:
         with:
           name: AIPCowork-${{ env.VERSION }}-macOS-x64-app
           path: ${{ env.SOURCE_DIR }}/src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.app
- 
-      # ===================== 修复版：七牛云上传 =====================
+
+      # ===================== 【已修复】七牛云上传 =====================
       - name: Install qshell
+        run: brew install qshell
+
+      - name: Upload DMG to Qiniu
         run: |
-          brew install qshell
-          qshell -v
-      
-      - name: Upload to Qiniu (latest)
-        run: |
-          # 方法：直接用环境变量配置七牛，最稳定，不会出现 Name can't be empty
-          export QINIU_ACCESS_KEY="${{ secrets.QINIU_ACCESS_KEY }}"
-          export QINIU_SECRET_KEY="${{ secrets.QINIU_SECRET_KEY }}"
+          # 关键修复：指定账户名，彻底解决 can't get current user
+          qshell account "${{ secrets.QINIU_ACCESS_KEY }}" "${{ secrets.QINIU_SECRET_KEY }}" "github-action"
           
-          # 源文件
           DMG_PATH=$(ls ${{ env.SOURCE_DIR }}/src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg)
-          
-          # 上传文件名（固定 latest）
           SAVE_NAME="AIPCowork-latest-macOS-x64.dmg"
           
-          # 上传（强制覆盖）
-          qshell rput --overwrite ${{ secrets.QINIU_BUCKET }} $SAVE_NAME $DMG_PATH
-          
+          qshell rput --overwrite ${{ secrets.QINIU_BUCKET }} "$SAVE_NAME" "$DMG_PATH"
           echo "✅ 上传成功：https://${{ secrets.QINIU_DOMAIN }}/$SAVE_NAME"
-      # ============================================================
+      # ==============================================================
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
