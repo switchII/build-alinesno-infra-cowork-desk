@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "指定要构建的 Git tag（留空则使用最新 tag）"
+        description: '指定要构建的 Git tag（留空则使用最新 tag）'
         required: false
-        default: ""
+        default: ''
         type: string
   repository_dispatch:
     types: [trigger-build]
@@ -16,9 +16,10 @@ permissions:
   actions: read
 
 env:
-  NODE_VERSION: "24"
-  SOURCE_DIR: "source"
-  QINIU_DIR: "aip-cowork-releases/"
+  NODE_VERSION: 24
+  SOURCE_DIR: source
+  QINIU_BUCKET: ${{ secrets.QINIU_BUCKET }}
+  QINIU_DOMAIN: ${{ secrets.QINIU_DOMAIN }}
 
 jobs:
   build-macos-x64:
@@ -66,47 +67,61 @@ jobs:
           brew install libpq mysql-client openssl@3
           echo "PKG_CONFIG_PATH=$(brew --prefix libpq)/lib/pkgconfig:$(brew --prefix mysql-client)/lib/pkgconfig:$(brew --prefix openssl@3)/lib/pkgconfig" >> $GITHUB_ENV
 
-      - name: Setup Rust
+      - name: Setup Rust (x64)
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-apple-darwin
 
-      - name: Patch tauri config
+      - name: Patch tauri.conf.json
         working-directory: ${{ env.SOURCE_DIR }}
         run: |
           VERSION=${{ env.VERSION }}
-          jq --arg v "$VERSION" '.version = $v | .productName = "AIPCowork-$v" | .build.beforeBuildCommand = "npm run build" | .build.beforeDevCommand = "npm run dev"' src-tauri/tauri.conf.json > tmp.json && mv tmp.json src-tauri/tauri.conf.json
+          jq --arg v "$VERSION" \
+            '.version = $v | .productName = "AIPCowork-$v" | .build.beforeBuildCommand = "npm run build" | .build.beforeDevCommand = "npm run dev"' \
+            src-tauri/tauri.conf.json > tmp.json && mv tmp.json src-tauri/tauri.conf.json
 
-      - name: Build Tauri App
+      - name: Build Tauri macOS x64
         working-directory: ${{ env.SOURCE_DIR }}
         run: |
           export CFLAGS="-arch x86_64"
           export OPENSSL_STATIC=1
           npx tauri build --target x86_64-apple-darwin
 
-      - name: Upload DMG artifact
+      - name: Upload DMG
         uses: actions/upload-artifact@v4
         with:
           name: AIPCowork-${{ env.VERSION }}-macOS-x64-dmg
           path: ${{ env.SOURCE_DIR }}/src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
 
-      - name: Upload APP artifact
+      - name: Upload APP
         uses: actions/upload-artifact@v4
         with:
           name: AIPCowork-${{ env.VERSION }}-macOS-x64-app
           path: ${{ env.SOURCE_DIR }}/src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.app
 
+      # ===================== 【已修复】七牛云上传 =====================
       - name: Install qshell
         run: brew install qshell
 
-      - name: Upload to Qiniu
+      - name: Upload DMG to Qiniu
         run: |
-          qshell account "${{ secrets.QINIU_ACCESS_KEY }}" "${{ secrets.QINIU_SECRET_KEY }}" github-action
-          DMG=$(ls ${{ env.SOURCE_DIR }}/src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg)
-          SAVE_NAME="${{ env.QINIU_DIR }}AIPCowork-latest-macOS-x64.dmg"
-          qshell rput --overwrite ${{ secrets.QINIU_BUCKET }} "$SAVE_NAME" "$DMG"
+          # 关键修复：指定账户名，彻底解决 can't get current user
+          qshell account "${{ secrets.QINIU_ACCESS_KEY }}" "${{ secrets.QINIU_SECRET_KEY }}" "github-action"
+          
+          DMG_PATH=$(ls ${{ env.SOURCE_DIR }}/src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg)
 
-      - name: Create GitHub Release
+          # =============== 在这里修改你要上传的七牛目录 ===============
+          QINIU_DIR="aip-cowork-releases/"  # 结尾必须带 /
+          # ============================================================
+          
+          # 最终保存的文件名（目录+文件名）
+          SAVE_NAME="${QINIU_DIR}Cowork-latest-macOS-x64.dmg" 
+          
+          qshell rput --overwrite ${{ secrets.QINIU_BUCKET }} "$SAVE_NAME" "$DMG_PATH"
+          echo "✅ 上传成功：https://${{ secrets.QINIU_DOMAIN }}/$SAVE_NAME"
+      # ==============================================================
+
+      - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.SELECTED_TAG }}
