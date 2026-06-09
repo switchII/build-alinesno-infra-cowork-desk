@@ -110,6 +110,8 @@ jobs:
       - name: Verify code version
         shell: bash
         run: | 
+          cd ${{ env.SOURCE_DIR }}
+          
           echo "====================================="
           echo "✅ 验证代码版本（无git，不报错）"
           echo "====================================="
