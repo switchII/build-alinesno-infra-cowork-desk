@@ -4,9 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: '指定 Git tag（留空用最新）'
+        description: '指定要构建的 Git tag（留空则使用最新 tag）'
         required: false
         default: ''
+        type: string
+  repository_dispatch:
+    types: [trigger-build]
 
 permissions:
   contents: write
