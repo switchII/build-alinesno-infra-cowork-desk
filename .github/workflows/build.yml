@@ -172,12 +172,19 @@ jobs:
           VERSION="${{ needs.determine-version.outputs.version }}"
           jq --arg v "$VERSION" \
             '.version = $v
-             | .productName = ("AIPCowork-" + $v)
+             | .productName = ("Cowork-" + $v)
              | .build.beforeBuildCommand = (.build.beforeBuildCommand | gsub("pnpm build"; "npm run build"))
              | .build.beforeDevCommand = (.build.beforeDevCommand | gsub("pnpm dev"; "npm run dev"))' \
             src-tauri/tauri.conf.json > src-tauri/tauri.conf.tmp.json && \
             mv src-tauri/tauri.conf.tmp.json src-tauri/tauri.conf.json
-
+            
+      - name: 🔍 打印最终 tauri.conf.json（排查版本）
+        working-directory: ${{ env.SOURCE_DIR }}
+        run: |
+          echo "====== 最终版本配置 ======"
+          cat src-tauri/tauri.conf.json | grep '"version"'
+          echo "=========================="
+    
       - name: Build Tauri app
         working-directory: ${{ env.SOURCE_DIR }}
         shell: bash
