@@ -1,0 +1,74 @@
+name: build and release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '指定要构建的 Git tag（留空则使用最新 tag）'
+        required: false
+        default: ''
+        type: string
+  repository_dispatch:
+    types: [trigger-build]
+
+permissions:
+  contents: write
+  actions: read
+
+env:
+  NODE_VERSION: '24'
+  SOURCE_DIR: source
+  QINIU_BUCKET: ${{ secrets.QINIU_BUCKET }}
+  QINIU_DOMAIN: ${{ secrets.QINIU_DOMAIN }}
+  QINIU_DIR: aip-cowork-releases/
+
+jobs:
+  determine-version:
+    name: Determine Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.extract-version.outputs.VERSION }}
+      tag: ${{ steps.extract-version.outputs.TAG }}
+
+    steps:
+      - name: Clone source repository and checkout target tag
+        id: clone-tag
+        shell: bash
+        run: |
+          # 直接使用 Secret 中的完整 URL，不要在这里手动处理协议头 
+          REPO="${{ secrets.COWORK_GIT_REPOSITORY_URL }}"
+          REPO="${REPO#https://}"
+          REPO="${REPO#http://}"
+          REPO_URL="https://${{ secrets.COWORK_GIT_REPOSITORY_USER }}:${{ secrets.COWORK_GIT_REPOSITORY_PASSWORD }}@${REPO}"
+          
+          # 确保 URL 包含鉴权信息 (如果 Secret 中只存了域名，则需要拼接)
+          # 建议将 COWORK_GIT_REPOSITORY_URL 直接存为：https://user:password@github.com/org/repo.git
+          git clone "$REPO_URL" source
+          
+          cd source
+          
+          # 获取 tag
+          git fetch --tags --force
+          
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            SELECTED_TAG="${{ github.event.inputs.tag }}"
+          else
+            # 获取最新 tag 的更安全写法
+            SELECTED_TAG=$(git describe --tags $(git rev-list --tags --max-count=1))
+          fi
+          
+          git checkout "$SELECTED_TAG"
+          echo "SELECTED_TAG=$SELECTED_TAG" >> $GITHUB_OUTPUT
+
+          git status
+
+      - name: Extract version from tag
+        id: extract-version
+        shell: bash
+        run: |
+          TAG="${{ steps.clone-tag.outputs.SELECTED_TAG }}"
+          VERSION="${TAG#v}"
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "TAG=$TAG" >> $GITHUB_OUTPUT
+
+          
