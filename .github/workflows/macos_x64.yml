@@ -26,23 +26,33 @@ jobs:
     name: Build macOS x64
     runs-on: macos-15-intel
     steps:
-      - name: Checkout source code
+      - name: Checkout source code (FIXED: 正确拉取 tag 代码)
         run: |
           REPO="${{ secrets.COWORK_GIT_REPOSITORY_URL }}"
           REPO="${REPO#https://}"
           REPO="${REPO#http://}"
+          AUTH_URL="https://${{ secrets.COWORK_GIT_REPOSITORY_USER }}:${{ secrets.COWORK_GIT_REPOSITORY_PASSWORD }}@${REPO}"
 
+          # 克隆完整仓库（不浅克隆，才能拿到所有 tag 代码）
+          git clone "$AUTH_URL" ${{ env.SOURCE_DIR }}
+          cd ${{ env.SOURCE_DIR }}
+
+          # 获取最新 tag
+          git fetch --tags
           if [ -n "${{ github.event.inputs.tag }}" ]; then
             SELECTED_TAG="${{ github.event.inputs.tag }}"
-            git clone --depth 1 --branch "$SELECTED_TAG" "https://${{ secrets.COWORK_GIT_REPOSITORY_USER }}:${{ secrets.COWORK_GIT_REPOSITORY_PASSWORD }}@${REPO}" ${{ env.SOURCE_DIR }}
           else
-            git clone --depth 1 "https://${{ secrets.COWORK_GIT_REPOSITORY_USER }}:${{ secrets.COWORK_GIT_REPOSITORY_PASSWORD }}@${REPO}" ${{ env.SOURCE_DIR }}
-            cd ${{ env.SOURCE_DIR }}
-            git fetch --tags
-            LATEST_TAG=$(git tag --sort=-creatordate | head -1)
-            git checkout "$LATEST_TAG"
-            SELECTED_TAG="$LATEST_TAG"
+            SELECTED_TAG=$(git tag --sort=-creatordate | head -1)
           fi
+
+          # 真正切换到 tag 代码（关键修复）
+          git checkout "$SELECTED_TAG"
+
+          # 输出确认
+          echo "✅ 使用 tag: $SELECTED_TAG"
+          echo "✅ 当前提交: $(git rev-parse --short HEAD)"
+          
+          # 导出变量
           echo "SELECTED_TAG=$SELECTED_TAG" >> $GITHUB_ENV
           echo "VERSION=${SELECTED_TAG#v}" >> $GITHUB_ENV
 
@@ -92,27 +102,17 @@ jobs:
           name: AIPCowork-${{ env.VERSION }}-macOS-x64-app
           path: ${{ env.SOURCE_DIR }}/src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.app
 
-      # ===================== 【已修复】七牛云上传 =====================
       - name: Install qshell
         run: brew install qshell
 
       - name: Upload DMG to Qiniu
         run: |
-          # 关键修复：指定账户名，彻底解决 can't get current user
           qshell account "${{ secrets.QINIU_ACCESS_KEY }}" "${{ secrets.QINIU_SECRET_KEY }}" "github-action"
-          
           DMG_PATH=$(ls ${{ env.SOURCE_DIR }}/src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg)
-
-          # =============== 在这里修改你要上传的七牛目录 ===============
-          QINIU_DIR="aip-cowork-releases/"  # 结尾必须带 /
-          # ============================================================
-          
-          # 最终保存的文件名（目录+文件名）
-          SAVE_NAME="${QINIU_DIR}AIPCowork-latest-macOS-x64.dmg" 
-          
+          QINIU_DIR="aip-cowork-releases/"
+          SAVE_NAME="${QINIU_DIR}AIPCowork-latest-macOS-x64.dmg"
           qshell rput --overwrite ${{ secrets.QINIU_BUCKET }} "$SAVE_NAME" "$DMG_PATH"
-          echo "✅ 上传成功：https://${{ secrets.QINIU_DOMAIN }}/$SAVE_NAME"
-      # ==============================================================
+          echo "✅ 上传成功：https://${{ env.QINIU_DOMAIN }}/$SAVE_NAME"
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
