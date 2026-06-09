@@ -35,30 +35,49 @@ jobs:
         id: clone-tag
         shell: bash
         run: |
-          # 直接使用 Secret 中的完整 URL，不要在这里手动处理协议头 
           REPO="${{ secrets.COWORK_GIT_REPOSITORY_URL }}"
           REPO="${REPO#https://}"
           REPO="${REPO#http://}"
           REPO_URL="https://${{ secrets.COWORK_GIT_REPOSITORY_USER }}:${{ secrets.COWORK_GIT_REPOSITORY_PASSWORD }}@${REPO}"
           
-          # 确保 URL 包含鉴权信息 (如果 Secret 中只存了域名，则需要拼接)
-          # 建议将 COWORK_GIT_REPOSITORY_URL 直接存为：https://user:password@github.com/org/repo.git
           git clone "$REPO_URL" source
-          
           cd source
           
-          # 获取 tag
+          echo "===> 拉取最新 Tags..."
           git fetch --tags --force
+          
+          echo "===> 仓库所有 Tags："
+          git tag --list
           
           if [ -n "${{ github.event.inputs.tag }}" ]; then
             SELECTED_TAG="${{ github.event.inputs.tag }}"
+            echo "===> 使用手动输入的 Tag：$SELECTED_TAG"
           else
-            # 获取最新 tag 的更安全写法
-            SELECTED_TAG=$(git describe --tags $(git rev-list --tags --max-count=1))
+            echo "===> 未输入 Tag，自动获取最新 Tag..."
+            SELECTED_TAG=$(git describe --tags --abbrev=0 2>/dev/null || git rev-list --tags --max-count=1 | xargs git describe --tags 2>/dev/null)
+            if [ -z "$SELECTED_TAG" ]; then
+              echo "❌ 错误：仓库中没有任何 Tag！"
+              exit 1
+            fi
+            echo "===> 自动获取到最新 Tag：$SELECTED_TAG"
           fi
           
           git checkout "$SELECTED_TAG"
+          echo "===> 最终使用的 Tag：$SELECTED_TAG"
           echo "SELECTED_TAG=$SELECTED_TAG" >> $GITHUB_OUTPUT
+
+          echo -e "\n====================================="
+          echo "📄 查看文件：src-tauri/tauri.conf.json"
+          echo "====================================="
+          cat src-tauri/tauri.conf.json
+          echo -e "=====================================\n"
+
+          # ↓↓↓ 在这里加上下面的代码 ↓↓↓
+          echo -e "\n====================================="
+          echo "📝 最后一次 Git 提交日志"
+          echo "====================================="
+          git log -1 --stat
+          # ↑↑↑ 结束 ↑↑↑
 
       - name: Extract version from tag
         id: extract-version
@@ -68,7 +87,11 @@ jobs:
           VERSION="${TAG#v}"
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
           echo "TAG=$TAG" >> $GITHUB_OUTPUT
-
+          
+          echo "✅ 最终版本信息："
+          echo "Tag = $TAG"
+          echo "版本号 = $VERSION"
+ 
       - name: Upload source
         uses: actions/upload-artifact@v4
         with:
