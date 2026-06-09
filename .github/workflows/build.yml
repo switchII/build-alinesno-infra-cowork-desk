@@ -38,29 +38,33 @@ jobs:
           REPO="${{ secrets.COWORK_GIT_REPOSITORY_URL }}"
           REPO="${REPO#https://}"
           REPO="${REPO#http://}"
+          AUTH_URL="https://${{ secrets.COWORK_GIT_REPOSITORY_USER }}:${{ secrets.COWORK_GIT_REPOSITORY_PASSWORD }}@${REPO}"
 
           if [ -n "${{ github.event.inputs.tag }}" ]; then
-            echo "Using specified tag: ${{ github.event.inputs.tag }}"
-            git clone --depth 1 \
-              --branch "${{ github.event.inputs.tag }}" \
-              "https://${{ secrets.COWORK_GIT_REPOSITORY_USER }}:${{ secrets.COWORK_GIT_REPOSITORY_PASSWORD }}@${REPO}" \
-              ${{ env.SOURCE_DIR }}
             SELECTED_TAG="${{ github.event.inputs.tag }}"
+            echo "Using specified tag: $SELECTED_TAG"
+            git clone --depth 1 --branch "$SELECTED_TAG" "$AUTH_URL" ${{ env.SOURCE_DIR }}
           else
-            git clone --depth 1 \
-              "https://${{ secrets.COWORK_GIT_REPOSITORY_USER }}:${{ secrets.COWORK_GIT_REPOSITORY_PASSWORD }}@${REPO}" \
-              ${{ env.SOURCE_DIR }}
+            git clone "$AUTH_URL" ${{ env.SOURCE_DIR }}
             cd ${{ env.SOURCE_DIR }}
-            git fetch --tags --depth 1 2>/dev/null || git fetch --tags
+            
+            git fetch --tags
             LATEST_TAG=$(git tag --sort=-creatordate | head -1)
+            
             if [ -z "$LATEST_TAG" ]; then
               echo "ERROR: No tags found in source repository"
               exit 1
             fi
-            echo "Using latest tag: $LATEST_TAG"
-            git checkout "$LATEST_TAG"
+            
             SELECTED_TAG="$LATEST_TAG"
+            echo "Using latest tag: $SELECTED_TAG"
+            git checkout "$SELECTED_TAG"
           fi
+
+          cd ${{ env.SOURCE_DIR }}
+          echo "Current checked out commit: $(git rev-parse HEAD)"
+          echo "Current tag: $(git describe --tags)"
+          
           echo "SELECTED_TAG=$SELECTED_TAG" >> $GITHUB_OUTPUT
 
       - name: Extract version from tag
