@@ -194,12 +194,13 @@ jobs:
         working-directory: ${{ env.SOURCE_DIR }}
         shell: bash
         run: |
-          export CFLAGS="-arch arm64"
-          export OPENSSL_STATIC=1
-          export OPENSSL_VENDORED=1
-          export CC="clang"
-          export AR="ar"
-          npx tauri build --target aarch64-apple-darwin
+          # export CFLAGS="-arch arm64"
+          # export OPENSSL_STATIC=1
+          # export OPENSSL_VENDORED=1
+          # export CC="clang"
+          # export AR="ar"
+          # npx tauri build --target aarch64-apple-darwin
+          npm run tauri build
 
       - name: Upload DMG installer
         uses: actions/upload-artifact@v4
