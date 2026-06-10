@@ -81,8 +81,15 @@ jobs:
         run: |
           TAG="${{ steps.clone-tag.outputs.SELECTED_TAG }}"
           VERSION="${TAG#v}"
+          
+          # 👇 关键修复：除了写入 OUTPUT，同时写入 GITHUB_ENV 变成全局变量
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
-          echo "TAG=$TAG" >> $GITHUB_OUTPUT
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "SELECTED_TAG=$TAG" >> $GITHUB_ENV
+          
+          echo "✅ 最终版本信息："
+          echo "Tag = $TAG"
+          echo "版本号 = $VERSION"
           
           echo "✅ 最终版本信息："
           echo "Tag = $TAG"
