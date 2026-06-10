@@ -200,7 +200,7 @@ jobs:
           # export CC="clang"
           # export AR="ar"
           # npx tauri build --target aarch64-apple-darwin
-          npm run tauri build
+          npm run tauri build --target aarch64-apple-darwin
 
       - name: Upload DMG installer
         uses: actions/upload-artifact@v4
@@ -298,7 +298,7 @@ jobs:
         env:
           OPENSSL_DIR: C:\vcpkg\installed\x64-windows-static
           OPENSSL_STATIC: '1'
-        run: npx tauri build --target x86_64-pc-windows-msvc
+        run: npm run tauri build --target x86_64-pc-windows-msvc
 
       - name: Upload NSIS installer
         uses: actions/upload-artifact@v4
