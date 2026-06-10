@@ -161,13 +161,13 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Cowork-${{ env.VERSION }}-macOS-x64-dmg
-          path: ${{ env.SOURCE_DIR }}/src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
+          path: ${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/dmg/*.dmg
 
       - name: Upload APP
         uses: actions/upload-artifact@v4
         with:
           name: Cowork-${{ env.VERSION }}-macOS-x64-app
-          path: ${{ env.SOURCE_DIR }}/src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.app
+          path: ${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/macos/*.app
 
       # ===================== 【已修复】七牛云上传 =====================
       - name: Install qshell
@@ -178,7 +178,7 @@ jobs:
           # 关键修复：指定账户名，彻底解决 can't get current user
           qshell account "${{ secrets.QINIU_ACCESS_KEY }}" "${{ secrets.QINIU_SECRET_KEY }}" "github-action"
           
-          DMG_PATH=$(ls ${{ env.SOURCE_DIR }}/src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg)
+          DMG_PATH=$(ls ${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/dmg/*.dmg)
 
           # =============== 在这里修改你要上传的七牛目录 ===============
           QINIU_DIR="aip-cowork-releases/"  # 结尾必须带 /
@@ -198,7 +198,7 @@ jobs:
           name: Cowork ${{ env.VERSION }} (macOS x64)
           draft: true
           files: |
-            ${{ env.SOURCE_DIR }}/src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
-            ${{ env.SOURCE_DIR }}/src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.app
+            ${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/dmg/*.dmg
+            ${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/macos/*.app
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
