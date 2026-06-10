@@ -213,7 +213,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Cowork-${{ needs.determine-version.outputs.version }}-macOS-arm64-app
-          path: ${{ env.SOURCE_DIR }}/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app
+          path: ${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/macos/*.app
           if-no-files-found: warn
 
       # ===================== 七牛上传 macOS Arm64 =====================
@@ -224,7 +224,7 @@ jobs:
         run: |
           qshell account "${{ secrets.QINIU_ACCESS_KEY }}" "${{ secrets.QINIU_SECRET_KEY }}" "github-action"
           
-          DMG_PATH=$(ls ${{ env.SOURCE_DIR }}/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg)
+          DMG_PATH=$(ls ${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/dmg/*.dmg)
           SAVE_NAME="${{ env.QINIU_DIR }}Cowork-latest-macOS-arm64.dmg" 
           
           qshell rput --overwrite ${{ env.QINIU_BUCKET }} "$SAVE_NAME" "$DMG_PATH"
@@ -304,14 +304,14 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Cowork-${{ needs.determine-version.outputs.version }}-Windows-x64-installer
-          path: ${{ env.SOURCE_DIR }}/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+          path: ${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/nsis/*.exe
           if-no-files-found: warn
 
       - name: Upload MSI installer
         uses: actions/upload-artifact@v4
         with:
           name: Cowork-${{ needs.determine-version.outputs.version }}-Windows-x64-msi
-          path: ${{ env.SOURCE_DIR }}/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
+          path: ${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/msi/*.msi
           if-no-files-found: warn
 
       # ===================== 七牛上传 Windows x64 =====================
@@ -320,12 +320,23 @@ jobs:
           curl -L https://github.com/qiniu/qshell/releases/download/v2.18.0/qshell-v2.18.0-windows-amd64.zip -o qshell.zip
           powershell -Command "Expand-Archive qshell.zip -DestinationPath C:\Windows"
           qshell version
-
+          
+      - name: Upload Windows MSI to Qiniu
+        run: |
+          qshell account "${{ secrets.QINIU_ACCESS_KEY }}" "${{ secrets.QINIU_SECRET_KEY }}" "github-action"
+          
+          $msi = Get-ChildItem "${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/msi/*.msi" | Select-Object -First 1
+          $SAVE_NAME = "${{ env.QINIU_DIR }}Cowork-latest-Windows-x64.msi"
+          
+          qshell rput --overwrite ${{ env.QINIU_BUCKET }} $SAVE_NAME $msi.FullName
+          echo "✅ 上传成功：https://${{ env.QINIU_DOMAIN }}/$SAVE_NAME"
+      # =================================================================
+      
       - name: Upload Windows EXE to Qiniu
         run: |
           qshell account "${{ secrets.QINIU_ACCESS_KEY }}" "${{ secrets.QINIU_SECRET_KEY }}" "github-action"
           
-          $exe = Get-ChildItem "${{ env.SOURCE_DIR }}/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe" | Select-Object -First 1
+          $exe = Get-ChildItem "${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/nsis/*.exe" | Select-Object -First 1
           $SAVE_NAME = "${{ env.QINIU_DIR }}Cowork-latest-Windows-x64.exe"
           
           qshell rput --overwrite ${{ env.QINIU_BUCKET }} $SAVE_NAME $exe.FullName
