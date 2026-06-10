@@ -133,6 +133,9 @@ jobs:
           echo "====== 开始版本配置 ======"
           cat src-tauri/tauri.conf.json | grep '"version"'
           echo "=========================="
+
+          # 👇 修复：从步骤输出拿正确的版本号
+          VERSION=${{ steps.extract-version.outputs.VERSION }}
           
           VERSION=${{ env.VERSION }}
           jq --arg v "$VERSION" \
