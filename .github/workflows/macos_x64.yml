@@ -136,8 +136,7 @@ jobs:
 
           # 👇 修复：从步骤输出拿正确的版本号
           VERSION=${{ steps.extract-version.outputs.VERSION }}
-          
-          VERSION=${{ env.VERSION }}
+           
           jq --arg v "$VERSION" \
             '.version = $v | .productName = "Cowork-$v" | .build.beforeBuildCommand = "npm run build" | .build.beforeDevCommand = "npm run dev"' \
             src-tauri/tauri.conf.json > tmp.json && mv tmp.json src-tauri/tauri.conf.json
