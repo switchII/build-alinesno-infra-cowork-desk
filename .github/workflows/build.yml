@@ -177,7 +177,7 @@ jobs:
           VERSION="${{ needs.determine-version.outputs.version }}"
           jq --arg v "$VERSION" \
             '.version = $v
-             | .productName = ("Cowork-" + $v)
+             | .productName = "Cowork"
              | .build.beforeBuildCommand = (.build.beforeBuildCommand | gsub("pnpm build"; "npm run build"))
              | .build.beforeDevCommand = (.build.beforeDevCommand | gsub("pnpm dev"; "npm run dev"))' \
             src-tauri/tauri.conf.json > src-tauri/tauri.conf.tmp.json && \
@@ -287,7 +287,7 @@ jobs:
           echo "Setting version to: $VERSION"
           jq --arg v "$VERSION" \
             '.version = $v
-             | .productName = ("Cowork-" + $v)
+             | .productName = "Cowork"
              | .build.beforeBuildCommand = (.build.beforeBuildCommand | gsub("pnpm build"; "npm run build"))
              | .build.beforeDevCommand = (.build.beforeDevCommand | gsub("pnpm dev"; "npm run dev"))' \
             src-tauri/tauri.conf.json > src-tauri/tauri.conf.tmp.json && \
