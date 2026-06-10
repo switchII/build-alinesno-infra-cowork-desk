@@ -138,7 +138,7 @@ jobs:
           VERSION=${{ steps.extract-version.outputs.VERSION }}
            
           jq --arg v "$VERSION" \
-            '.version = $v | .productName = "Cowork-$v" | .build.beforeBuildCommand = "npm run build" | .build.beforeDevCommand = "npm run dev"' \
+            '.version = $v | .productName = "Cowork" | .build.beforeBuildCommand = "npm run build" | .build.beforeDevCommand = "npm run dev"' \
             src-tauri/tauri.conf.json > tmp.json && mv tmp.json src-tauri/tauri.conf.json
  
           echo "====== 开始版本配置 ======"
