@@ -176,10 +176,7 @@ jobs:
           
           VERSION="${{ needs.determine-version.outputs.version }}"
           jq --arg v "$VERSION" \
-            '.version = $v
-             | .productName = "Cowork"
-             | .build.beforeBuildCommand = (.build.beforeBuildCommand | gsub("pnpm build"; "npm run build"))
-             | .build.beforeDevCommand = (.build.beforeDevCommand | gsub("pnpm dev"; "npm run dev"))' \
+            '.version = $v | .productName = "Cowork" | .build.beforeBuildCommand = "npm run build" | .build.beforeDevCommand = "npm run dev"' \
             src-tauri/tauri.conf.json > src-tauri/tauri.conf.tmp.json && \
             mv src-tauri/tauri.conf.tmp.json src-tauri/tauri.conf.json
             
@@ -193,20 +190,13 @@ jobs:
       - name: Build Tauri app
         working-directory: ${{ env.SOURCE_DIR }}
         shell: bash
-        run: |
-          # export CFLAGS="-arch arm64"
-          # export OPENSSL_STATIC=1
-          # export OPENSSL_VENDORED=1
-          # export CC="clang"
-          # export AR="ar"
-          # npx tauri build --target aarch64-apple-darwin
-          npm run tauri build
+        run: npm run tauri build
 
       - name: Upload DMG installer
         uses: actions/upload-artifact@v4
         with:
           name: Cowork-${{ needs.determine-version.outputs.version }}-macOS-arm64-dmg
-          path: ${{ env.SOURCE_DIR }}/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+          path: ${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/dmg/*.dmg
           if-no-files-found: warn
 
       - name: Upload .app bundle
@@ -286,10 +276,7 @@ jobs:
           VERSION="${{ needs.determine-version.outputs.version }}"
           echo "Setting version to: $VERSION"
           jq --arg v "$VERSION" \
-            '.version = $v
-             | .productName = "Cowork"
-             | .build.beforeBuildCommand = (.build.beforeBuildCommand | gsub("pnpm build"; "npm run build"))
-             | .build.beforeDevCommand = (.build.beforeDevCommand | gsub("pnpm dev"; "npm run dev"))' \
+            '.version = $v | .productName = "Cowork" | .build.beforeBuildCommand = "npm run build" | .build.beforeDevCommand = "npm run dev"' \
             src-tauri/tauri.conf.json > src-tauri/tauri.conf.tmp.json && \
             mv src-tauri/tauri.conf.tmp.json src-tauri/tauri.conf.json
 
@@ -321,26 +308,19 @@ jobs:
           powershell -Command "Expand-Archive qshell.zip -DestinationPath C:\Windows"
           qshell version
           
-      - name: Upload Windows MSI to Qiniu
+      - name: Upload Windows MSI & EXE to Qiniu
         run: |
           qshell account "${{ secrets.QINIU_ACCESS_KEY }}" "${{ secrets.QINIU_SECRET_KEY }}" "github-action"
           
           $msi = Get-ChildItem "${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/msi/*.msi" | Select-Object -First 1
           $SAVE_NAME = "${{ env.QINIU_DIR }}Cowork-latest-Windows-x64.msi"
-          
           qshell rput --overwrite ${{ env.QINIU_BUCKET }} $SAVE_NAME $msi.FullName
-          echo "✅ 上传成功：https://${{ env.QINIU_DOMAIN }}/$SAVE_NAME"
-      # =================================================================
-      
-      - name: Upload Windows EXE to Qiniu
-        run: |
-          qshell account "${{ secrets.QINIU_ACCESS_KEY }}" "${{ secrets.QINIU_SECRET_KEY }}" "github-action"
+          echo "✅ MSI 上传成功：https://${{ env.QINIU_DOMAIN }}/$SAVE_NAME"
           
           $exe = Get-ChildItem "${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/nsis/*.exe" | Select-Object -First 1
           $SAVE_NAME = "${{ env.QINIU_DIR }}Cowork-latest-Windows-x64.exe"
-          
           qshell rput --overwrite ${{ env.QINIU_BUCKET }} $SAVE_NAME $exe.FullName
-          echo "✅ 上传成功：https://${{ env.QINIU_DOMAIN }}/$SAVE_NAME"
+          echo "✅ EXE 上传成功：https://${{ env.QINIU_DOMAIN }}/$SAVE_NAME"
       # =================================================================
 
   release:
