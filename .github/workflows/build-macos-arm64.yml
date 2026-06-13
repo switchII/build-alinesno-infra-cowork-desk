@@ -1,0 +1,202 @@
+name: build mac-os arm64
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '指定要构建的 Git tag（留空则使用最新 tag）'
+        required: false
+        default: ''
+        type: string
+  repository_dispatch:
+    types: [trigger-build]
+
+permissions:
+  contents: write
+  actions: read
+
+env:
+  NODE_VERSION: 24
+  SOURCE_DIR: source
+  QINIU_BUCKET: ${{ secrets.QINIU_BUCKET }}
+  QINIU_DOMAIN: ${{ secrets.QINIU_DOMAIN }}
+
+jobs:
+  build-macos-arm64:
+    name: Build macOS ARM64
+    runs-on: macos-latest
+    
+    steps:
+      - name: Clone source repository and checkout target tag
+        id: clone-tag
+        shell: bash
+        run: |
+          REPO="${{ secrets.COWORK_GIT_REPOSITORY_URL }}"
+          REPO="${REPO#https://}"
+          REPO="${REPO#http://}"
+          REPO_URL="https://${{ secrets.COWORK_GIT_REPOSITORY_USER }}:${{ secrets.COWORK_GIT_REPOSITORY_PASSWORD }}@${REPO}"
+          
+          git clone "$REPO_URL" source
+          cd source
+          
+          echo "===> 拉取最新 Tags..."
+          git fetch --tags --force
+          
+          echo "===> 仓库所有 Tags："
+          git tag --list
+          
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            SELECTED_TAG="${{ github.event.inputs.tag }}"
+            echo "===> 使用手动输入的 Tag：$SELECTED_TAG"
+          else
+            echo "===> 未输入 Tag，自动获取最新 Tag..."
+            SELECTED_TAG=$(git describe --tags --abbrev=0 2>/dev/null || git rev-list --tags --max-count=1 | xargs git describe --tags 2>/dev/null)
+            if [ -z "$SELECTED_TAG" ]; then
+              echo "❌ 错误：仓库中没有任何 Tag！"
+              exit 1
+            fi
+            echo "===> 自动获取到最新 Tag：$SELECTED_TAG"
+          fi
+          
+          git checkout "$SELECTED_TAG"
+          echo "===> 最终使用的 Tag：$SELECTED_TAG"
+          echo "SELECTED_TAG=$SELECTED_TAG" >> $GITHUB_OUTPUT
+
+          echo -e "\n====================================="
+          echo "📄 查看文件：src-tauri/tauri.conf.json"
+          echo "====================================="
+          cat src-tauri/tauri.conf.json
+          echo -e "=====================================\n"
+
+          echo -e "\n====================================="
+          echo "📝 最后一次 Git 提交日志"
+          echo "====================================="
+          git log -1 --stat
+          
+      - name: Extract version from tag
+        id: extract-version
+        shell: bash
+        run: |
+          TAG="${{ steps.clone-tag.outputs.SELECTED_TAG }}"
+          VERSION="${TAG#v}"
+          
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "SELECTED_TAG=$TAG" >> $GITHUB_ENV
+          
+          echo "✅ 最终版本信息："
+          echo "Tag = $TAG"
+          echo "版本号 = $VERSION"
+          
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install dependencies
+        working-directory: ${{ env.SOURCE_DIR }}
+        run: npm install
+
+      - name: Install macOS system dependencies
+        run: |
+          brew install libpq mysql-client openssl@3
+          echo "PKG_CONFIG_PATH=$(brew --prefix libpq)/lib/pkgconfig:$(brew --prefix mysql-client)/lib/pkgconfig:$(brew --prefix openssl@3)/lib/pkgconfig" >> $GITHUB_ENV
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Rust cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ env.SOURCE_DIR }}/src-tauri -> target
+          shared-key: macos-arm64
+          
+      - name: Verify code version
+        shell: bash
+        run: | 
+          cd ${{ env.SOURCE_DIR }}
+          
+          echo "====================================="
+          echo "✅ 验证代码版本（无git，不报错）"
+          echo "====================================="
+
+          echo -e "\n====================================="
+          echo "📄 src-tauri/tauri.conf.json 版本号"
+          echo "====================================="
+          cat src-tauri/tauri.conf.json | grep '"version"'
+
+          echo -e "\n====================================="
+          echo "📄 package.json 版本号"
+          echo "====================================="
+          cat package.json | grep '"version"'
+        
+      - name: Patch tauri.conf.json
+        working-directory: ${{ env.SOURCE_DIR }}
+        run: |
+          echo "====== 开始版本配置 ======"
+          cat src-tauri/tauri.conf.json | grep '"version"'
+          echo "=========================="
+
+          VERSION=${{ steps.extract-version.outputs.VERSION }}
+           
+          jq --arg v "$VERSION" \
+            '.version = $v | .productName = "Cowork" | .build.beforeBuildCommand = "npm run build" | .build.beforeDevCommand = "npm run dev"' \
+            src-tauri/tauri.conf.json > tmp.json && mv tmp.json src-tauri/tauri.conf.json
+ 
+          echo "====== 版本配置完成 ======"
+          cat src-tauri/tauri.conf.json | grep '"version"'
+          echo "=========================="
+            
+      - name: 🔍 打印最终 tauri.conf.json（排查版本）
+        working-directory: ${{ env.SOURCE_DIR }}
+        run: |
+          echo "====== 最终版本配置 ======"
+          cat src-tauri/tauri.conf.json | grep '"version"'
+          echo "=========================="
+          
+      - name: Build Tauri macOS ARM64
+        working-directory: ${{ env.SOURCE_DIR }}
+        run: npm run tauri build
+
+      - name: Upload DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: Cowork-${{ env.VERSION }}-macOS-arm64-dmg
+          path: ${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/dmg/*.dmg
+
+      - name: Upload APP
+        uses: actions/upload-artifact@v4
+        with:
+          name: Cowork-${{ env.VERSION }}-macOS-arm64-app
+          path: ${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/macos/*.app
+
+      # ===================== 七牛云上传 =====================
+      - name: Install qshell
+        run: brew install qshell
+
+      - name: Upload DMG to Qiniu
+        run: |
+          qshell account "${{ secrets.QINIU_ACCESS_KEY }}" "${{ secrets.QINIU_SECRET_KEY }}" "github-action"
+          
+          DMG_PATH=$(ls ${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/dmg/*.dmg)
+
+          QINIU_DIR="aip-cowork-releases/"
+          SAVE_NAME="${QINIU_DIR}Cowork-latest-macOS-arm64.dmg" 
+          
+          qshell rput --overwrite ${{ secrets.QINIU_BUCKET }} "$SAVE_NAME" "$DMG_PATH"
+          echo "✅ 上传成功：https://${{ secrets.QINIU_DOMAIN }}/$SAVE_NAME"
+      # =====================================================
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.SELECTED_TAG }}
+          name: Cowork ${{ env.VERSION }} (macOS ARM64)
+          draft: true
+          files: |
+            ${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/dmg/*.dmg
+            ${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/macos/*.app
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
