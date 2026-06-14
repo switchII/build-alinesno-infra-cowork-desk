@@ -160,7 +160,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.SOURCE_DIR }}/src-tauri/runtimes
-          key: runtimes-macos-arm64-node20-py312-git247-v1
+          key: runtimes-macos-arm64-node20-py312-git247-v2
 
       - name: Download bundled runtimes (macOS ARM64)
         working-directory: ${{ env.SOURCE_DIR }}
