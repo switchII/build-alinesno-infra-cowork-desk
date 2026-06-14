@@ -142,7 +142,7 @@ jobs:
           VERSION=${{ steps.extract-version.outputs.VERSION }}
            
           jq --arg v "$VERSION" \
-            '.version = $v | .productName = "Cowork" | .build.beforeBuildCommand = "npm run build" | .build.beforeDevCommand = "npm run dev"' \
+            '.version = $v | .productName = "Cowork" | .build.beforeBuildCommand = "npm run build" | .build.beforeDevCommand = "npm run dev" | .bundle.resources = ["runtimes/python/**/*", "runtimes/node/**/*", "runtimes/git/**/*"]' \
             src-tauri/tauri.conf.json > tmp.json && mv tmp.json src-tauri/tauri.conf.json
  
           echo "====== 版本配置完成 ======"
@@ -155,7 +155,27 @@ jobs:
           echo "====== 最终版本配置 ======"
           cat src-tauri/tauri.conf.json | grep '"version"'
           echo "=========================="
-          
+
+      - name: Cache bundled runtimes
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.SOURCE_DIR }}/src-tauri/runtimes
+          key: runtimes-macos-arm64-node20-py312-git247-v1
+
+      - name: Download bundled runtimes (macOS ARM64)
+        working-directory: ${{ env.SOURCE_DIR }}
+        run: |
+          if [ ! -d "src-tauri/runtimes/python" ] || [ ! -d "src-tauri/runtimes/node" ] || [ ! -d "src-tauri/runtimes/git" ]; then
+            chmod +x scripts/download-runtimes.sh
+            bash scripts/download-runtimes.sh macos-arm64
+          else
+            echo "==> Using cached runtimes"
+          fi
+          echo "=== Bundled runtimes ==="
+          ls src-tauri/runtimes/python/bin/ | head -5
+          ls src-tauri/runtimes/node/bin/ | head -5
+          ls src-tauri/runtimes/git/ | head -5
+
       - name: Build Tauri macOS ARM64
         working-directory: ${{ env.SOURCE_DIR }}
         run: npm run tauri build
