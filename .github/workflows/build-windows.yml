@@ -142,7 +142,7 @@ jobs:
           VERSION=${{ steps.extract-version.outputs.VERSION }}
            
           jq --arg v "$VERSION" \
-            '.version = $v | .productName = "Cowork" | .build.beforeBuildCommand = "npm run build" | .build.beforeDevCommand = "npm run dev" | .bundle.resources = ["runtimes/python/**/*", "runtimes/node/**/*"]' \
+            '.version = $v | .productName = "Cowork" | .build.beforeBuildCommand = "npm run build" | .build.beforeDevCommand = "npm run dev" | .bundle.resources = ["runtimes/python/**/*", "runtimes/node/**/*", "runtimes/git/**/*"]' \
             src-tauri/tauri.conf.json > tmp.json && mv tmp.json src-tauri/tauri.conf.json
  
           echo "====== 版本配置完成 ======"
@@ -161,13 +161,13 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.SOURCE_DIR }}/src-tauri/runtimes
-          key: runtimes-win-x64-node20-py312-v1
+          key: runtimes-win-x64-node20-py312-git247-v1
 
       - name: Download bundled runtimes (Windows)
         working-directory: ${{ env.SOURCE_DIR }}
         shell: bash
         run: |
-          if [ ! -d "src-tauri/runtimes/python" ] || [ ! -d "src-tauri/runtimes/node" ]; then
+          if [ ! -d "src-tauri/runtimes/python" ] || [ ! -d "src-tauri/runtimes/node" ] || [ ! -d "src-tauri/runtimes/git" ]; then
             chmod +x scripts/download-runtimes.sh
             bash scripts/download-runtimes.sh windows-x64
           else
@@ -176,6 +176,7 @@ jobs:
           echo "=== Bundled runtimes ==="
           ls src-tauri/runtimes/python/ | head -5
           ls src-tauri/runtimes/node/ | head -5
+          ls src-tauri/runtimes/git/ | head -5
 
       - name: Build Tauri Windows x64
         working-directory: ${{ env.SOURCE_DIR }}
