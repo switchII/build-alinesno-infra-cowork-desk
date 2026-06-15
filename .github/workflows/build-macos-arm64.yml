@@ -272,7 +272,7 @@ jobs:
             echo "✅ 已下载现有 latest.json"
             BASE_JSON=$(cat existing_latest.json)
           else
-            echo "⚠️ 未找到现有 latest.json，创建空模板"
+            echo "⚠️ 未找到现有 latest.json，创建空模板" 
             BASE_JSON='{"version":"","notes":"","pub_date":"","platforms":{}}'
           fi
 
