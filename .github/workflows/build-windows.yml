@@ -184,6 +184,8 @@ jobs:
         env:
           OPENSSL_DIR: C:\vcpkg\installed\x64-windows-static
           OPENSSL_STATIC: '1'
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm run tauri build
 
       # ===================== 代码签名 =====================
@@ -280,6 +282,55 @@ jobs:
           qshell rput --overwrite ${{ secrets.QINIU_BUCKET }} $SAVE_NAME $exe.FullName
           echo "✅ EXE 上传成功：https://${{ secrets.QINIU_DOMAIN }}/$SAVE_NAME"
       # =====================================================
+
+      # ===================== 更新 latest.json =====================
+      - name: Update latest.json for Windows platform
+        shell: bash
+        run: |
+          echo "====== 开始更新 latest.json (windows-x86_64) ======"
+
+          # 读取 minisign 签名
+          SIG_FILE=$(ls ${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/nsis/*.exe.zip.sig 2>/dev/null | head -1)
+          if [ -z "$SIG_FILE" ]; then
+            echo "❌ 未找到 .exe.zip.sig 签名文件，跳过 latest.json 更新"
+            exit 0
+          fi
+          SIGNATURE=$(cat "$SIG_FILE")
+          echo "✅ 读取到 minisign 签名 ($(echo "$SIGNATURE" | wc -c) bytes)"
+
+          QINIU_DOMAIN="https://${{ secrets.QINIU_DOMAIN }}"
+          LATEST_JSON_URL="${QINIU_DOMAIN}/aip-cowork-releases/latest.json"
+          DOWNLOAD_URL="${QINIU_DOMAIN}/aip-cowork-releases/Cowork-latest-Windows-x64.exe"
+          PLATFORM_KEY="windows-x86_64"
+
+          # 下载现有 latest.json 或创建空模板
+          if curl -sf -o existing_latest.json "$LATEST_JSON_URL"; then
+            echo "✅ 已下载现有 latest.json"
+            BASE_JSON=$(cat existing_latest.json)
+          else
+            echo "⚠️ 未找到现有 latest.json，创建空模板"
+            BASE_JSON='{"version":"","notes":"","pub_date":"","platforms":{}}'
+          fi
+
+          # 合并当前平台条目
+          UPDATED_JSON=$(echo "$BASE_JSON" | jq \
+            --arg v "${{ env.VERSION }}" \
+            --arg notes "Cowork ${{ env.VERSION }}" \
+            --arg pub_date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg sig "$SIGNATURE" \
+            --arg url "$DOWNLOAD_URL" \
+            --arg pk "$PLATFORM_KEY" \
+            '.version = $v | .notes = $notes | .pub_date = $pub_date | .platforms[$pk] = {"signature": $sig, "url": $url}')
+
+          echo "$UPDATED_JSON" > latest.json
+          echo "📄 生成的 latest.json:"
+          cat latest.json | jq .
+
+          # 上传 latest.json 到七牛
+          qshell rput --overwrite ${{ secrets.QINIU_BUCKET }} "aip-cowork-releases/latest.json" "$(pwd)/latest.json"
+          echo "✅ latest.json 已上传到七牛云"
+          echo "====== latest.json 更新完成 ======"
+      # ===========================================================
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
