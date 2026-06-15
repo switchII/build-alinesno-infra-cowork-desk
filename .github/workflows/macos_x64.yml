@@ -145,7 +145,7 @@ jobs:
           VERSION=${{ steps.extract-version.outputs.VERSION }}
            
           jq --arg v "$VERSION" \
-            '.version = $v | .productName = "Cowork" | .build.beforeBuildCommand = "npm run build" | .build.beforeDevCommand = "npm run dev" | .bundle.resources = ["runtimes/python/**/*", "runtimes/node/**/*", "runtimes/git/**/*"]' \
+            '.version = $v | .productName = "Cowork" | .build.beforeBuildCommand = "npm run build" | .build.beforeDevCommand = "npm run dev" | .bundle.resources = ["runtimes/python/**/*", "runtimes/node/**/*", "runtimes/git/**/*", "runtimes/pandoc/**/*"]' \
             src-tauri/tauri.conf.json > tmp.json && mv tmp.json src-tauri/tauri.conf.json
  
           echo "====== 开始版本配置 ======"
@@ -163,12 +163,12 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.SOURCE_DIR }}/src-tauri/runtimes
-          key: runtimes-macos-x64-node20-py312-git247-v2
+          key: runtimes-macos-x64-node20-py312-git247-pandoc364-v1
 
       - name: Download bundled runtimes (macOS x64)
         working-directory: ${{ env.SOURCE_DIR }}
         run: |
-          if [ ! -d "src-tauri/runtimes/python" ] || [ ! -d "src-tauri/runtimes/node" ] || [ ! -d "src-tauri/runtimes/git" ]; then
+          if [ ! -d "src-tauri/runtimes/python" ] || [ ! -d "src-tauri/runtimes/node" ] || [ ! -d "src-tauri/runtimes/git" ] || [ ! -d "src-tauri/runtimes/pandoc" ]; then
             chmod +x scripts/download-runtimes.sh
             bash scripts/download-runtimes.sh macos-x64
           else
@@ -178,9 +178,47 @@ jobs:
           ls src-tauri/runtimes/python/bin/ | head -5
           ls src-tauri/runtimes/node/bin/ | head -5
           ls src-tauri/runtimes/git/ | head -5
+          ls src-tauri/runtimes/pandoc/ | head -5
+
+      - name: Import Apple Code Signing Certificate
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          KEYCHAIN_PASSWORD=$(uuidgen)
+          echo "KEYCHAIN_PASSWORD=$KEYCHAIN_PASSWORD" >> $GITHUB_ENV
+
+          # Decode and save the .p12 certificate
+          echo "$APPLE_CERTIFICATE" | base64 --decode > certificate.p12
+
+          # Create a temporary keychain
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security set-keychain-settings -t 3600 -u build.keychain
+
+          # Import certificate into keychain
+          security import certificate.p12 -k build.keychain -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" build.keychain
+
+          # Verify the imported certificate
+          echo "=== Imported signing identities ==="
+          security find-identity -v -p codesigning build.keychain
+
+          # Clean up the .p12 file
+          rm -f certificate.p12
 
       - name: Build Tauri macOS x64
         working-directory: ${{ env.SOURCE_DIR }}
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
            npm run tauri build
 
@@ -217,6 +255,55 @@ jobs:
           qshell rput --overwrite ${{ secrets.QINIU_BUCKET }} "$SAVE_NAME" "$DMG_PATH"
           echo "✅ 上传成功：https://${{ secrets.QINIU_DOMAIN }}/$SAVE_NAME"
       # ==============================================================
+
+      # ===================== 更新 latest.json =====================
+      - name: Update latest.json for macOS x64 platform
+        shell: bash
+        run: |
+          echo "====== 开始更新 latest.json (darwin-x86_64) ======"
+
+          # 读取 minisign 签名
+          SIG_FILE=$(ls ${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/macos/*.app.tar.gz.sig 2>/dev/null | head -1)
+          if [ -z "$SIG_FILE" ]; then
+            echo "❌ 未找到 .app.tar.gz.sig 签名文件，跳过 latest.json 更新"
+            exit 0
+          fi
+          SIGNATURE=$(cat "$SIG_FILE")
+          echo "✅ 读取到 minisign 签名 ($(echo "$SIGNATURE" | wc -c) bytes)"
+
+          QINIU_DOMAIN="https://${{ secrets.QINIU_DOMAIN }}"
+          LATEST_JSON_URL="${QINIU_DOMAIN}/aip-cowork-releases/latest.json"
+          DOWNLOAD_URL="${QINIU_DOMAIN}/aip-cowork-releases/Cowork-latest-macOS-x64.dmg"
+          PLATFORM_KEY="darwin-x86_64"
+
+          # 下载现有 latest.json 或创建空模板
+          if curl -sf -o existing_latest.json "$LATEST_JSON_URL"; then
+            echo "✅ 已下载现有 latest.json"
+            BASE_JSON=$(cat existing_latest.json)
+          else
+            echo "⚠️ 未找到现有 latest.json，创建空模板"
+            BASE_JSON='{"version":"","notes":"","pub_date":"","platforms":{}}'
+          fi
+
+          # 合并当前平台条目
+          UPDATED_JSON=$(echo "$BASE_JSON" | jq \
+            --arg v "${{ env.VERSION }}" \
+            --arg notes "Cowork ${{ env.VERSION }}" \
+            --arg pub_date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg sig "$SIGNATURE" \
+            --arg url "$DOWNLOAD_URL" \
+            --arg pk "$PLATFORM_KEY" \
+            '.version = $v | .notes = $notes | .pub_date = $pub_date | .platforms[$pk] = {"signature": $sig, "url": $url}')
+
+          echo "$UPDATED_JSON" > latest.json
+          echo "📄 生成的 latest.json:"
+          cat latest.json | jq .
+
+          # 上传 latest.json 到七牛
+          qshell rput --overwrite ${{ secrets.QINIU_BUCKET }} "aip-cowork-releases/latest.json" "$(pwd)/latest.json"
+          echo "✅ latest.json 已上传到七牛云"
+          echo "====== latest.json 更新完成 ======"
+      # ===========================================================
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
