@@ -210,6 +210,11 @@ jobs:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
           echo "====== 对 runtimes 二进制文件签名 ======"
+
+          # 确保 build.keychain 在搜索列表中并解锁（跨 step 需要重新激活）
+          security list-keychains -d user -s build.keychain login.keychain-db
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+
           RUNTIMES_DIR="${{ env.SOURCE_DIR }}/src-tauri/runtimes"
 
           # 查找所有需要签名的文件：可执行文件、.dylib、.so
