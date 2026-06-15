@@ -189,18 +189,21 @@ jobs:
           echo "$APPLE_CERTIFICATE" | base64 --decode > certificate.p12
 
           # Create a temporary keychain
-          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
-          security default-keychain -s build.keychain
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
-          security set-keychain-settings -t 3600 -u build.keychain
+          KEYCHAIN_PATH="$HOME/Library/Keychains/build.keychain-db"
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> $GITHUB_ENV
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security default-keychain -s "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -t 3600 -u "$KEYCHAIN_PATH"
 
           # Import certificate into keychain
-          security import certificate.p12 -k build.keychain -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" build.keychain
+          security import certificate.p12 -k "$KEYCHAIN_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 
           # Verify the imported certificate
           echo "=== Imported signing identities ==="
-          security find-identity -v -p codesigning build.keychain
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
 
           # Clean up the .p12 file
           rm -f certificate.p12
@@ -212,8 +215,11 @@ jobs:
           echo "====== 对 runtimes 二进制文件签名 ======"
 
           # 确保 build.keychain 在搜索列表中并解锁（跨 step 需要重新激活）
-          security list-keychains -d user -s build.keychain login.keychain-db
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          echo "=== 验证签名身份 ==="
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
 
           RUNTIMES_DIR="${{ env.SOURCE_DIR }}/src-tauri/runtimes"
 
