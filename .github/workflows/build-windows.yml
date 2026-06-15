@@ -187,7 +187,7 @@ jobs:
         run: npm run tauri build
 
       # ===================== 代码签名 =====================
-      - name: Sign installers (evsign.cn)
+      - name: Sign installers 
         shell: bash
         run: |
           echo "====== 开始签名安装包 ======"
