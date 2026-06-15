@@ -294,11 +294,13 @@ jobs:
           echo "📂 NSIS bundle 目录内容："
           ls -la ${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/nsis/ || true
 
-          # 读取 minisign 签名（Tauri v2 后缀为 .nsis.zip.sig）
-          SIG_FILE=$(ls ${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/nsis/*.nsis.zip.sig 2>/dev/null | head -1)
+          # 读取 minisign 签名
+          # Tauri v2 (createUpdaterArtifacts=true): 生成 .exe.sig
+          # Tauri v1 compatible: 生成 .nsis.zip.sig
+          SIG_FILE=$(ls ${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/nsis/*.exe.sig 2>/dev/null | head -1)
           if [ -z "$SIG_FILE" ]; then
-            echo "⚠️ 未找到 .nsis.zip.sig，尝试查找 .exe.zip.sig ..."
-            SIG_FILE=$(ls ${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/nsis/*.exe.zip.sig 2>/dev/null | head -1)
+            echo "⚠️ 未找到 .exe.sig，尝试查找 .nsis.zip.sig ..."
+            SIG_FILE=$(ls ${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/nsis/*.nsis.zip.sig 2>/dev/null | head -1)
           fi
           if [ -z "$SIG_FILE" ]; then
             echo "❌ 未找到任何签名文件，列出所有 .sig 文件排查："
