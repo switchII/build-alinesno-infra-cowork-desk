@@ -208,6 +208,45 @@ jobs:
           # Clean up the .p12 file
           rm -f certificate.p12
 
+      - name: Codesign bundled runtimes for Apple notarization
+        shell: bash
+        run: |
+          echo "====== 开始对 bundled runtimes 进行代码签名 ======"
+          
+          RUNTIME_DIR="${{ env.SOURCE_DIR }}/src-tauri/runtimes"
+          IDENTITY="${{ secrets.APPLE_SIGNING_IDENTITY }}"
+          
+          if [ -z "$IDENTITY" ]; then
+            echo "⚠️ APPLE_SIGNING_IDENTITY 未设置，跳过运行时签名"
+            exit 0
+          fi
+          
+          # 查找所有 Mach-O 二进制文件并签名
+          SIGN_COUNT=0
+          SIGN_FAIL=0
+          
+          while IFS= read -r -d '' file; do
+            if file "$file" | grep -q "Mach-O"; then
+              echo "  Signing: $file"
+              if codesign --force --options runtime --sign "$IDENTITY" --timestamp "$file" 2>&1; then
+                SIGN_COUNT=$((SIGN_COUNT + 1))
+              else
+                echo "  ⚠️ Failed to sign: $file"
+                SIGN_FAIL=$((SIGN_FAIL + 1))
+              fi
+            fi
+          done < <(find "$RUNTIME_DIR" -type f -print0)
+          
+          echo ""
+          echo "✅ 签名完成：成功 $SIGN_COUNT 个，失败 $SIGN_FAIL 个"
+          
+          if [ "$SIGN_FAIL" -gt 0 ]; then
+            echo "❌ 有 $SIGN_FAIL 个文件签名失败，请检查"
+            exit 1
+          fi
+          
+          echo "====== bundled runtimes 代码签名完成 ======"
+
       - name: Build Tauri macOS x64
         working-directory: ${{ env.SOURCE_DIR }}
         env:
