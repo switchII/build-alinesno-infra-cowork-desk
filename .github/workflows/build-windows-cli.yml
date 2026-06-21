@@ -201,6 +201,19 @@ jobs:
           $signKey    = "${{ secrets.EV_SIGN_CLI_KEY }}"
           $bundleBase = "${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle"
 
+          # ---- UTF-8 code page (fix Chinese filename garbling) ----
+          chcp 65001 | Out-Null
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
+          # ---- pre-create tool data dir & clean stale files ----
+          $toolDataDir = "C:\ProgramData\SignatureTool"
+          if (-not (Test-Path "$toolDataDir\upload")) {
+            New-Item -ItemType Directory -Path "$toolDataDir\upload" -Force | Out-Null
+          }
+          # Remove leftover files to avoid file-lock conflicts
+          Get-ChildItem "$toolDataDir\upload\*" -Force -ErrorAction SilentlyContinue |
+            Remove-Item -Force -ErrorAction SilentlyContinue
+
           # ---- download (exe 本身就是签名工具，无需安装) ----
           curl.exe -L "https://down.evsign.cn/software/%E8%87%AA%E5%8A%A9%E7%AD%BE%E5%90%8D%E5%B7%A5%E5%85%B7_v2.3.3.exe" -o $signClient
           echo "[OK] SignClient ready: $signClient"
@@ -209,8 +222,11 @@ jobs:
           function Sign-File([string]$f) {
             $n = Split-Path $f -Leaf
             echo "==> sign: $n"
+            Push-Location $env:RUNNER_TEMP
             & $signClient $f -key $signKey -sha256
-            if ($LASTEXITCODE -ne 0) { echo "[FAIL] $n (code $LASTEXITCODE)"; exit 1 }
+            $code = $LASTEXITCODE
+            Pop-Location
+            if ($code -ne 0) { echo "[FAIL] $n (code $code)"; exit 1 }
             echo "[OK] $n"
           }
 
