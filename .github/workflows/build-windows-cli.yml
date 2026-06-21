@@ -188,92 +188,42 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm run tauri build
 
-      # ===================== 下载并安装 EVSign CLI 签名工具 =====================
-      - name: Install EVSign CLI signing tool
-        shell: powershell
-        run: |
-          echo "====== 下载 EVSign CLI 签名工具 ======"
-          $cliUrl = "https://down.evsign.cn/software/%E8%87%AA%E5%8A%A9%E7%AD%BE%E5%90%8D%E5%B7%A5%E5%85%B7_v2.3.3.exe"
-          $installerPath = "$env:RUNNER_TEMP\evsign-installer.exe"
-          $installDir = "C:\EVSign"
-
-          # 下载 CLI 工具安装包
-          curl.exe -L "$cliUrl" -o "$installerPath"
-          if (-not (Test-Path "$installerPath")) {
-            echo "❌ EVSign CLI 工具下载失败"
-            exit 1
-          }
-          echo "✅ EVSign CLI 工具下载完成: $installerPath"
-
-          # 静默安装（如果支持），否则直接运行安装包
-          echo "==> 安装 EVSign CLI 工具..."
-          Start-Process -FilePath "$installerPath" -ArgumentList "/S", "/D=$installDir" -Wait -NoNewWindow
-          echo "✅ EVSign CLI 工具安装完成: $installDir"
-
-          # 将安装目录加入 PATH
-          echo "$installDir" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          echo "✅ 已将 $installDir 加入 PATH"
-
-          # 列出安装目录内容
-          if (Test-Path "$installDir") {
-            Get-ChildItem "$installDir"
-          }
+      # ==================== EVSign CLI 签名（可复用 step） ====================
+      # 复用到其他 workflow 只需：
+      #   1. 添加 Secret: EV_SIGN_CLI_KEY
+      #   2. 复制本 step，修改 Sign-File 调用路径即可
       # =====================================================================
-
-      # ===================== CLI 代码签名 =====================
-      - name: Sign installers (CLI)
+      - name: EVSign CLI signing
         shell: powershell
         run: |
-          echo "====== 开始 CLI 签名安装包 ======"
+          # ---- config ----
+          $signClient = "$env:RUNNER_TEMP\SignClient.exe"
+          $signKey    = "${{ secrets.EV_SIGN_CLI_KEY }}"
+          $bundleBase = "${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle"
 
-          $signClient = "C:\EVSign\SignClient.exe"
-          $signKey = "${{ secrets.EV_SIGN_CLI_KEY }}"
+          # ---- download (exe 本身就是签名工具，无需安装) ----
+          curl.exe -L "https://down.evsign.cn/software/%E8%87%AA%E5%8A%A9%E7%AD%BE%E5%90%8D%E5%B7%A5%E5%85%B7_v2.3.3.exe" -o $signClient
+          echo "[OK] SignClient ready: $signClient"
 
-          if (-not (Test-Path $signClient)) {
-            # 尝试在安装目录递归查找
-            $found = Get-ChildItem -Path "C:\EVSign" -Recurse -Filter "SignClient.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($found) {
-              $signClient = $found.FullName
-              echo "📂 找到 SignClient.exe: $signClient"
-            } else {
-              echo "❌ 未找到 SignClient.exe，请检查安装"
-              Get-ChildItem -Path "C:\EVSign" -Recurse -ErrorAction SilentlyContinue
-              exit 1
-            }
+          # ---- helper ----
+          function Sign-File([string]$f) {
+            $n = Split-Path $f -Leaf
+            echo "==> sign: $n"
+            & $signClient $f -key $signKey -sha256
+            if ($LASTEXITCODE -ne 0) { echo "[FAIL] $n (code $LASTEXITCODE)"; exit 1 }
+            echo "[OK] $n"
           }
 
-          # 签名 NSIS (.exe)
-          $exeFile = Get-ChildItem "${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/nsis/*.exe" | Select-Object -First 1
-          if ($exeFile) {
-            echo "==> 签名 NSIS: $($exeFile.Name)"
-            & $signClient "$($exeFile.FullName)" -key $signKey -sha256
-            if ($LASTEXITCODE -eq 0) {
-              echo "✅ NSIS 签名成功: $($exeFile.Name)"
-            } else {
-              echo "❌ NSIS 签名失败 (exit code: $LASTEXITCODE)"
-              exit 1
-            }
-          } else {
-            echo "⚠️ 未找到 NSIS .exe 文件，跳过签名"
-          }
+          # ---- sign NSIS .exe ----
+          $e = Get-ChildItem "$bundleBase/nsis/*.exe" | Select-Object -First 1
+          if ($e) { Sign-File $e.FullName } else { echo "[SKIP] no .exe" }
 
-          # 签名 MSI (.msi)
-          $msiFile = Get-ChildItem "${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/msi/*.msi" | Select-Object -First 1
-          if ($msiFile) {
-            echo "==> 签名 MSI: $($msiFile.Name)"
-            & $signClient "$($msiFile.FullName)" -key $signKey -sha256
-            if ($LASTEXITCODE -eq 0) {
-              echo "✅ MSI 签名成功: $($msiFile.Name)"
-            } else {
-              echo "❌ MSI 签名失败 (exit code: $LASTEXITCODE)"
-              exit 1
-            }
-          } else {
-            echo "⚠️ 未找到 MSI .msi 文件，跳过签名"
-          }
+          # ---- sign MSI .msi ----
+          $m = Get-ChildItem "$bundleBase/msi/*.msi" | Select-Object -First 1
+          if ($m) { Sign-File $m.FullName } else { echo "[SKIP] no .msi" }
 
-          echo "====== CLI 签名完成 ======"
-      # =====================================================
+          echo "====== EVSign CLI signing done ======"
+      # =====================================================================
 
       - name: Upload NSIS installer
         uses: actions/upload-artifact@v4
