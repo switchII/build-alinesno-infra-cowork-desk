@@ -1,4 +1,4 @@
-name: build windows x64 (CLI签名)
+name: build windows x64 (CLI Sign)
 
 on:
   workflow_dispatch:
@@ -9,7 +9,7 @@ on:
         default: ''
         type: string
   repository_dispatch:
-    types: [trigger-build-cli]
+    types: [trigger-build]
 
 permissions:
   contents: write
@@ -23,7 +23,7 @@ env:
 
 jobs:
   build-windows:
-    name: Build Windows x64 (CLI签名)
+    name: Build Windows x64
     runs-on: windows-latest
     
     steps:
@@ -188,78 +188,146 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm run tauri build
 
-      # ==================== EVSign CLI 签名（可复用 step） ====================
-      # 复用到其他 workflow 只需：
-      #   1. 添加 Secret: EV_SIGN_CLI_KEY
-      #   2. 复制本 step，修改 Sign-File 调用路径即可
-      # =====================================================================
-      - name: EVSign CLI signing
+      # ===================== 下载签名工具 =====================
+      - name: Download EVSign CLI (SignClient.exe)
         shell: powershell
         run: |
-          # ---- config ----
-          $signClient = "$env:RUNNER_TEMP\SignClient.exe"
-          $signKey    = "${{ secrets.EV_SIGN_CLI_KEY }}"
-          $bundleBase = "${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle"
+          # 设置 UTF-8 编码，避免中文 URL 解析异常
+          chcp 65001 | Out-Null
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+          $ProgressPreference = 'SilentlyContinue'
 
-          # ---- UTF-8 code page (fix Chinese filename garbling) ----
+          $signToolDir = "C:\evsign-cli"
+          New-Item -ItemType Directory -Force -Path $signToolDir | Out-Null
+
+          # 下载链接中包含中文文件名（自助签名工具_v2.3.3.exe），保存为英文避免编码问题
+          $downloadUrl = "https://down.evsign.cn/software/%E8%87%AA%E5%8A%A9%E7%AD%BE%E5%90%8D%E5%B7%A5%E5%85%B7_v2.3.3.exe"
+          $signClientPath = Join-Path $signToolDir "SignClient.exe"
+
+          Write-Host "====== 下载 EVSign 自助签名工具 v2.3.3 ======"
+          Write-Host "下载地址: $downloadUrl"
+          Write-Host "保存路径: $signClientPath"
+
+          try {
+            Invoke-WebRequest -Uri $downloadUrl -OutFile $signClientPath -UseBasicParsing -ErrorAction Stop
+          } catch {
+            Write-Error "下载失败: $_"
+            exit 1
+          }
+
+          if (Test-Path $signClientPath) {
+            $fileSize = [math]::Round((Get-Item $signClientPath).Length / 1MB, 2)
+            Write-Host "下载完成: $signClientPath ($fileSize MB)"
+          } else {
+            Write-Error "SignClient.exe 下载后不存在"
+            exit 1
+          }
+
+          # 写入环境变量供后续步骤使用
+          Add-Content -Path $env:GITHUB_PATH -Value $signToolDir
+          Add-Content -Path $env:GITHUB_ENV -Value "SIGN_CLIENT_PATH=$signClientPath"
+          Write-Host "SIGN_CLIENT_PATH=$signClientPath"
+          Write-Host "====== 签名工具准备就绪 ======"
+      # =====================================================
+
+      # ===================== 代码签名 (CLI) =====================
+      - name: Sign installers (CLI)
+        id: cli-sign
+        shell: powershell
+        env:
+          EV_SIGN_KEY: ${{ secrets.EV_SIGN_KEY }}
+        run: |
           chcp 65001 | Out-Null
           [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
-          # ---- pre-create tool data dir & clean stale files ----
-          $toolDataDir = "C:\ProgramData\SignatureTool"
-          if (-not (Test-Path "$toolDataDir\upload")) {
-            New-Item -ItemType Directory -Path "$toolDataDir\upload" -Force | Out-Null
+          $signClient = $env:SIGN_CLIENT_PATH
+          if (-not $signClient) {
+            # Fallback: 尝试从默认路径查找
+            $signClient = (Get-ChildItem -Path "C:\evsign-cli" -Filter "SignClient.exe" -Recurse | Select-Object -First 1).FullName
           }
-          # Remove leftover files to avoid file-lock conflicts
-          Get-ChildItem "$toolDataDir\upload\*" -Force -ErrorAction SilentlyContinue |
-            Remove-Item -Force -ErrorAction SilentlyContinue
 
-          # ---- download (exe 本身就是签名工具，无需安装) ----
-          curl.exe -L "https://down.evsign.cn/software/%E8%87%AA%E5%8A%A9%E7%AD%BE%E5%90%8D%E5%B7%A5%E5%85%B7_v2.3.3.exe" -o $signClient
-          echo "[OK] SignClient ready: $signClient"
+          if (-not $signClient -or -not (Test-Path $signClient)) {
+            Write-Error "❌ SignClient.exe 不存在: $signClient"
+            exit 1
+          }
 
-          # ---- helper ----
-          function Sign-File([string]$f) {
-            $n = Split-Path $f -Leaf
-            # Record file hash before signing for later comparison
-            $hashBefore = (Get-FileHash $f -Algorithm SHA256).Hash
-            echo "==> sign: $n"
-            echo "    hash-before: $hashBefore"
+          Write-Host "====== 开始 CLI 签名安装包 ======"
+          Write-Host "签名工具路径: $signClient"
+          Write-Host "签名密钥: $($env:EV_SIGN_KEY.Substring(0,8))****"
 
-            Push-Location $env:RUNNER_TEMP
-            # Doc: filename must be in English double quotes
-            $output = & $signClient "`"$f`"" -key $signKey -sha256 2>&1
-            $code = $LASTEXITCODE
-            Pop-Location
+          $signSuccess = $true
+          $exeSigned = $false
+          $msiSigned = $false
 
-            # Print tool output
-            echo "--- SignClient output (code=$code) ---"
-            if ($output) { echo ($output | Out-String) }
-            echo "--- end ---"
+          # 签名 NSIS (.exe)
+          $exeFile = Get-ChildItem "${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/nsis/*.exe" | Select-Object -First 1
+          if ($exeFile) {
+            Write-Host "`n==> 签名 NSIS: $($exeFile.Name)"
+            Write-Host "==> 文件路径: $($exeFile.FullName)"
+            Write-Host "==> 文件大小: $([math]::Round($exeFile.Length / 1MB, 2)) MB"
 
-            # Doc: return 0 = success, 1 = failure
-            if ($code -ne 0) { echo "[FAIL] $n signing failed"; exit 1 }
+            $signOutput = & $signClient $exeFile.FullName -key $env:EV_SIGN_KEY 2>&1 | Out-String
+            $exitCode = $LASTEXITCODE
+            Write-Host "------ SignClient 输出 ------"
+            Write-Host $signOutput
+            Write-Host "------ 退出码: $exitCode ------"
 
-            # Verify: file hash changed = signature was embedded
-            $hashAfter = (Get-FileHash $f -Algorithm SHA256).Hash
-            if ($hashAfter -ne $hashBefore) {
-              echo "[OK] $n signed (hash changed)"
-              echo "    hash-after:  $hashAfter"
+            # 判断签名是否成功：检查输出中是否包含"签名完成"且退出码为 0
+            if ($signOutput -match "签名完成" -and $exitCode -eq 0) {
+              Write-Host "✅ NSIS 签名成功: $($exeFile.Name)"
+              Write-Host "✅ EVSIGN_NSIS_RESULT=SUCCESS" >> $env:GITHUB_OUTPUT
+              $exeSigned = $true
             } else {
-              echo "[WARN] $n hash unchanged - signature may not have been applied!"
+              Write-Host "❌ NSIS 签名失败！退出码=$exitCode"
+              Write-Host "❌ EVSIGN_NSIS_RESULT=FAILED" >> $env:GITHUB_OUTPUT
+              $signSuccess = $false
             }
+          } else {
+            Write-Host "⚠️ 未找到 NSIS .exe 文件，跳过签名"
+            Write-Host "⚠️ EVSIGN_NSIS_RESULT=SKIPPED" >> $env:GITHUB_OUTPUT
           }
 
-          # ---- sign NSIS .exe ----
-          $e = Get-ChildItem "$bundleBase/nsis/*.exe" | Select-Object -First 1
-          if ($e) { Sign-File $e.FullName } else { echo "[SKIP] no .exe" }
+          # 签名 MSI (.msi)
+          $msiFile = Get-ChildItem "${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/msi/*.msi" | Select-Object -First 1
+          if ($msiFile) {
+            Write-Host "`n==> 签名 MSI: $($msiFile.Name)"
+            Write-Host "==> 文件路径: $($msiFile.FullName)"
+            Write-Host "==> 文件大小: $([math]::Round($msiFile.Length / 1MB, 2)) MB"
 
-          # ---- sign MSI .msi ----
-          $m = Get-ChildItem "$bundleBase/msi/*.msi" | Select-Object -First 1
-          if ($m) { Sign-File $m.FullName } else { echo "[SKIP] no .msi" }
+            $signOutput = & $signClient $msiFile.FullName -key $env:EV_SIGN_KEY 2>&1 | Out-String
+            $exitCode = $LASTEXITCODE
+            Write-Host "------ SignClient 输出 ------"
+            Write-Host $signOutput
+            Write-Host "------ 退出码: $exitCode ------"
 
-          echo "====== EVSign CLI signing done ======"
-      # =====================================================================
+            # 判断签名是否成功
+            if ($signOutput -match "签名完成" -and $exitCode -eq 0) {
+              Write-Host "✅ MSI 签名成功: $($msiFile.Name)"
+              Write-Host "✅ EVSIGN_MSI_RESULT=SUCCESS" >> $env:GITHUB_OUTPUT
+              $msiSigned = $true
+            } else {
+              Write-Host "❌ MSI 签名失败！退出码=$exitCode"
+              Write-Host "❌ EVSIGN_MSI_RESULT=FAILED" >> $env:GITHUB_OUTPUT
+              $signSuccess = $false
+            }
+          } else {
+            Write-Host "⚠️ 未找到 MSI .msi 文件，跳过签名"
+            Write-Host "⚠️ EVSIGN_MSI_RESULT=SKIPPED" >> $env:GITHUB_OUTPUT
+          }
+
+          # 汇总签名结果
+          Write-Host "`n====== 签名结果汇总 ======"
+          Write-Host "NSIS (.exe): $(if ($exeSigned) { '✅ 成功' } elseif ($exeFile) { '❌ 失败' } else { '⚠️ 跳过' })"
+          Write-Host "MSI  (.msi): $(if ($msiSigned) { '✅ 成功' } elseif ($msiFile) { '❌ 失败' } else { '⚠️ 跳过' })"
+          Write-Host "=========================="
+
+          if (-not $signSuccess) {
+            Write-Error "❌ 存在签名失败的文件，中止构建"
+            exit 1
+          }
+
+          Write-Host "====== CLI 签名全部完成 ======"
+      # =====================================================
 
       - name: Upload NSIS installer
         uses: actions/upload-artifact@v4
@@ -366,7 +434,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.SELECTED_TAG }}
-          name: Cowork ${{ env.VERSION }} (Windows x64 - CLI签名)
+          name: Cowork ${{ env.VERSION }} (Windows x64)
           draft: true
           files: |
             ${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/nsis/*.exe
