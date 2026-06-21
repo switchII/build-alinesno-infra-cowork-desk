@@ -193,12 +193,12 @@ jobs:
         shell: powershell
         run: |
           echo "====== 下载 EVSign CLI 签名工具 ======"
-          $cliUrl = "${{ secrets.TAURI_SIGNING_DOWNLOAD_URL }}"
+          $cliUrl = "https://down.evsign.cn/software/%E8%87%AA%E5%8A%A9%E7%AD%BE%E5%90%8D%E5%B7%A5%E5%85%B7_v2.3.3.exe"
           $installerPath = "$env:RUNNER_TEMP\evsign-installer.exe"
           $installDir = "C:\EVSign"
 
           # 下载 CLI 工具安装包
-          curl -L "$cliUrl" -o "$installerPath"
+          curl.exe -L "$cliUrl" -o "$installerPath"
           if (-not (Test-Path "$installerPath")) {
             echo "❌ EVSign CLI 工具下载失败"
             exit 1
