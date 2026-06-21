@@ -221,13 +221,33 @@ jobs:
           # ---- helper ----
           function Sign-File([string]$f) {
             $n = Split-Path $f -Leaf
+            # Record file hash before signing for later comparison
+            $hashBefore = (Get-FileHash $f -Algorithm SHA256).Hash
             echo "==> sign: $n"
+            echo "    hash-before: $hashBefore"
+
             Push-Location $env:RUNNER_TEMP
-            & $signClient $f -key $signKey -sha256
+            # Doc: filename must be in English double quotes
+            $output = & $signClient "`"$f`"" -key $signKey -sha256 2>&1
             $code = $LASTEXITCODE
             Pop-Location
-            if ($code -ne 0) { echo "[FAIL] $n (code $code)"; exit 1 }
-            echo "[OK] $n"
+
+            # Print tool output
+            echo "--- SignClient output (code=$code) ---"
+            if ($output) { echo ($output | Out-String) }
+            echo "--- end ---"
+
+            # Doc: return 0 = success, 1 = failure
+            if ($code -ne 0) { echo "[FAIL] $n signing failed"; exit 1 }
+
+            # Verify: file hash changed = signature was embedded
+            $hashAfter = (Get-FileHash $f -Algorithm SHA256).Hash
+            if ($hashAfter -ne $hashBefore) {
+              echo "[OK] $n signed (hash changed)"
+              echo "    hash-after:  $hashAfter"
+            } else {
+              echo "[WARN] $n hash unchanged - signature may not have been applied!"
+            }
           }
 
           # ---- sign NSIS .exe ----
