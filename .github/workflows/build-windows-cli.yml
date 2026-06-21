@@ -1,4 +1,4 @@
-name: build windows x64
+name: build windows x64 cli
 
 on:
   workflow_dispatch:
