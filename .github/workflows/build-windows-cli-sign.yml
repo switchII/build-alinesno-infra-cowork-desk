@@ -1,4 +1,4 @@
-name: build mac-os x64 (intel)
+name: build windows x64 (CLI Sign)
 
 on:
   workflow_dispatch:
@@ -29,9 +29,9 @@ env:
   QINIU_DOMAIN: ${{ secrets.QINIU_DOMAIN }}
 
 jobs:
-  build-macos-x64:
-    name: Build macOS x64
-    runs-on: macos-15-intel
+  build-windows:
+    name: Build Windows x64
+    runs-on: windows-latest
     
     steps:
       - name: Clone source repository and checkout target tag
@@ -75,12 +75,10 @@ jobs:
           cat src-tauri/tauri.conf.json
           echo -e "=====================================\n"
 
-          # ↓↓↓ 在这里加上下面的代码 ↓↓↓
           echo -e "\n====================================="
           echo "📝 最后一次 Git 提交日志"
           echo "====================================="
           git log -1 --stat
-          # ↑↑↑ 结束 ↑↑↑
           
       - name: Extract version from tag
         id: extract-version
@@ -89,14 +87,9 @@ jobs:
           TAG="${{ steps.clone-tag.outputs.SELECTED_TAG }}"
           VERSION="${TAG#v}"
           
-          # 👇 关键修复：除了写入 OUTPUT，同时写入 GITHUB_ENV 变成全局变量
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
           echo "VERSION=$VERSION" >> $GITHUB_ENV
           echo "SELECTED_TAG=$TAG" >> $GITHUB_ENV
-          
-          echo "✅ 最终版本信息："
-          echo "Tag = $TAG"
-          echo "版本号 = $VERSION"
           
           echo "✅ 最终版本信息："
           echo "Tag = $TAG"
@@ -111,15 +104,20 @@ jobs:
         working-directory: ${{ env.SOURCE_DIR }}
         run: npm install
 
-      - name: Install macOS dependencies
+      - name: Install OpenSSL via vcpkg
         run: |
-          brew install libpq mysql-client openssl@3
-          echo "PKG_CONFIG_PATH=$(brew --prefix libpq)/lib/pkgconfig:$(brew --prefix mysql-client)/lib/pkgconfig:$(brew --prefix openssl@3)/lib/pkgconfig" >> $GITHUB_ENV
+          vcpkg integrate install
+          vcpkg install openssl:x64-windows-static
 
-      - name: Setup Rust (x64)
+      - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-apple-darwin
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ env.SOURCE_DIR }}/src-tauri -> target
           
       - name: Verify code version
         shell: bash
@@ -139,28 +137,28 @@ jobs:
           echo "📄 package.json 版本号"
           echo "====================================="
           cat package.json | grep '"version"'
-          
+        
       - name: Patch tauri.conf.json
         working-directory: ${{ env.SOURCE_DIR }}
+        shell: bash
         run: |
-
           echo "====== 开始版本配置 ======"
           cat src-tauri/tauri.conf.json | grep '"version"'
           echo "=========================="
 
-          # 👇 修复：从步骤输出拿正确的版本号
           VERSION=${{ steps.extract-version.outputs.VERSION }}
            
           jq --arg v "$VERSION" \
             '.version = $v | .productName = "Cowork" | .build.beforeBuildCommand = "npm run build" | .build.beforeDevCommand = "npm run dev" | .bundle.resources = ["runtimes/python/**/*", "runtimes/node/**/*", "runtimes/git/**/*", "runtimes/pandoc/**/*"]' \
             src-tauri/tauri.conf.json > tmp.json && mv tmp.json src-tauri/tauri.conf.json
  
-          echo "====== 开始版本配置 ======"
+          echo "====== 版本配置完成 ======"
           cat src-tauri/tauri.conf.json | grep '"version"'
           echo "=========================="
             
       - name: 🔍 打印最终 tauri.conf.json（排查版本）
         working-directory: ${{ env.SOURCE_DIR }}
+        shell: bash
         run: |
           echo "====== 最终版本配置 ======"
           cat src-tauri/tauri.conf.json | grep '"version"'
@@ -170,184 +168,245 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.SOURCE_DIR }}/src-tauri/runtimes
-          key: runtimes-macos-x64-node20-py312-git247-pandoc364-v1
+          key: runtimes-win-x64-node20-py312-git247-pandoc364-v1
 
-      - name: Download bundled runtimes (macOS x64)
+      - name: Download bundled runtimes (Windows)
         working-directory: ${{ env.SOURCE_DIR }}
+        shell: bash
         run: |
           if [ ! -d "src-tauri/runtimes/python" ] || [ ! -d "src-tauri/runtimes/node" ] || [ ! -d "src-tauri/runtimes/git" ] || [ ! -d "src-tauri/runtimes/pandoc" ]; then
             chmod +x scripts/download-runtimes.sh
-            bash scripts/download-runtimes.sh macos-x64
+            bash scripts/download-runtimes.sh windows-x64
           else
             echo "==> Using cached runtimes"
           fi
           echo "=== Bundled runtimes ==="
-          ls src-tauri/runtimes/python/bin/ | head -5
-          ls src-tauri/runtimes/node/bin/ | head -5
+          ls src-tauri/runtimes/python/ | head -5
+          ls src-tauri/runtimes/node/ | head -5
           ls src-tauri/runtimes/git/ | head -5
           ls src-tauri/runtimes/pandoc/ | head -5
 
-      - name: Import Apple Code Signing Certificate
-        env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-        run: |
-          KEYCHAIN_PASSWORD=$(uuidgen)
-          echo "KEYCHAIN_PASSWORD=$KEYCHAIN_PASSWORD" >> $GITHUB_ENV
-
-          # Decode and save the .p12 certificate
-          echo "$APPLE_CERTIFICATE" | base64 --decode > certificate.p12
-
-          # Create a temporary keychain
-          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
-          security default-keychain -s build.keychain
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
-          security set-keychain-settings -t 3600 -u build.keychain
-
-          # Import certificate into keychain
-          security import certificate.p12 -k build.keychain -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" build.keychain
-
-          # Verify the imported certificate
-          echo "=== Imported signing identities ==="
-          security find-identity -v -p codesigning build.keychain
-
-          # Clean up the .p12 file
-          rm -f certificate.p12
-
-      - name: Codesign bundled runtimes for Apple notarization
-        shell: bash
-        run: |
-          echo "====== 开始对 bundled runtimes 进行代码签名 ======"
-          
-          RUNTIME_DIR="${{ env.SOURCE_DIR }}/src-tauri/runtimes"
-          IDENTITY="${{ secrets.APPLE_SIGNING_IDENTITY }}"
-          
-          if [ -z "$IDENTITY" ]; then
-            echo "⚠️ APPLE_SIGNING_IDENTITY 未设置，跳过运行时签名"
-            exit 0
-          fi
-          
-          # 查找所有 Mach-O 二进制文件并签名
-          SIGN_COUNT=0
-          SIGN_FAIL=0
-          
-          while IFS= read -r -d '' file; do
-            if file "$file" | grep -q "Mach-O"; then
-              echo "  Signing: $file"
-              if codesign --force --options runtime --sign "$IDENTITY" --timestamp "$file" 2>&1; then
-                SIGN_COUNT=$((SIGN_COUNT + 1))
-              else
-                echo "  ⚠️ Failed to sign: $file"
-                SIGN_FAIL=$((SIGN_FAIL + 1))
-              fi
-            fi
-          done < <(find "$RUNTIME_DIR" -type f -print0)
-          
-          echo ""
-          echo "✅ 签名完成：成功 $SIGN_COUNT 个，失败 $SIGN_FAIL 个"
-          
-          if [ "$SIGN_FAIL" -gt 0 ]; then
-            echo "❌ 有 $SIGN_FAIL 个文件签名失败，请检查"
-            exit 1
-          fi
-          
-          echo "====== bundled runtimes 代码签名完成 ======"
-
-      - name: Build Tauri macOS x64
+      - name: Build Tauri Windows x64
         working-directory: ${{ env.SOURCE_DIR }}
         env:
+          OPENSSL_DIR: C:\vcpkg\installed\x64-windows-static
+          OPENSSL_STATIC: '1'
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: |
-          MAX_RETRIES=3
-          RETRY_DELAY=30
-          for i in $(seq 1 $MAX_RETRIES); do
-            echo "====== 构建尝试 $i/$MAX_RETRIES ======"
-            set +e
-            npm run tauri build 2>&1 | tee build.log
-            BUILD_EXIT=${PIPESTATUS[0]}
-            set -e
-            if [ $BUILD_EXIT -eq 0 ]; then
-              echo "✅ 构建成功"
-              break
-            fi
-            if grep -q "timestamp was expected but was not found" build.log && [ $i -lt $MAX_RETRIES ]; then
-              echo "⚠️ 时间戳服务器暂时不可达，${RETRY_DELAY}s 后重试..."
-              sleep $RETRY_DELAY
-            else
-              echo "❌ 构建失败（非时间戳问题或已达最大重试次数）"
-              exit $BUILD_EXIT
-            fi
-          done
+        run: npm run tauri build
 
-      - name: Upload DMG
-        uses: actions/upload-artifact@v4
-        with:
-          name: Cowork-${{ env.VERSION }}-macOS-x64-dmg
-          path: ${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/dmg/*.dmg
-
-      - name: Upload APP
-        uses: actions/upload-artifact@v4
-        with:
-          name: Cowork-${{ env.VERSION }}-macOS-x64-app
-          path: ${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/macos/*.app
-
-      # ===================== 【已修复】七牛云上传 =====================
-      - name: Install qshell
-        run: brew install qshell
-
-      - name: Upload DMG to Qiniu
-        run: |
-          # 关键修复：指定账户名，彻底解决 can't get current user
-          qshell account "${{ secrets.QINIU_ACCESS_KEY }}" "${{ secrets.QINIU_SECRET_KEY }}" "github-action"
-          
-          DMG_PATH=$(ls ${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/dmg/*.dmg)
-
-          # =============== 在这里修改你要上传的七牛目录 ===============
-          QINIU_DIR="aip-cowork-releases/"  # 结尾必须带 /
-          # ============================================================
-          
-          # 最终保存的文件名（目录+文件名）
-          SAVE_NAME="${QINIU_DIR}Cowork-${VERSION}-macOS-x64.dmg" 
-          
-          qshell rput --overwrite ${{ secrets.QINIU_BUCKET }} "$SAVE_NAME" "$DMG_PATH"
-          echo "✅ 上传成功：https://${{ secrets.QINIU_DOMAIN }}/$SAVE_NAME"
-      # ==============================================================
-
-      # ===================== 更新 latest.json =====================
-      - name: Update latest.json for macOS x64 platform
+      # ===================== 下载签名工具 =====================
+      - name: Download EVSign CLI (SignClient.exe)
         shell: bash
         run: |
-          echo "====== 开始更新 latest.json (darwin-x86_64) ======"
+          SIGN_TOOL_DIR="C:/evsign-cli"
+          mkdir -p "$SIGN_TOOL_DIR"
+
+          # 下载链接中包含中文文件名（自助签名工具_v2.3.3.exe），保存为英文避免编码问题
+          DOWNLOAD_URL="https://down.evsign.cn/software/%E8%87%AA%E5%8A%A9%E7%AD%BE%E5%90%8D%E5%B7%A5%E5%85%B7_v2.3.3.exe"
+          SIGN_CLIENT_PATH="$SIGN_TOOL_DIR/SignClient.exe"
+
+          echo "====== 下载 EVSign 自助签名工具 v2.3.3 ======"
+          echo "下载地址: $DOWNLOAD_URL"
+          echo "保存路径: $SIGN_CLIENT_PATH"
+
+          curl -L -o "$SIGN_CLIENT_PATH" "$DOWNLOAD_URL"
+          CURL_EXIT=$?
+          if [ $CURL_EXIT -ne 0 ]; then
+            echo "❌ 下载失败，curl 退出码: $CURL_EXIT"
+            exit 1
+          fi
+
+          if [ -f "$SIGN_CLIENT_PATH" ]; then
+            FILE_SIZE=$(du -h "$SIGN_CLIENT_PATH" | cut -f1)
+            echo "✅ 下载完成: $SIGN_CLIENT_PATH ($FILE_SIZE)"
+          else
+            echo "❌ SignClient.exe 下载后不存在"
+            exit 1
+          fi
+
+          # 写入环境变量供后续步骤使用
+          echo "$SIGN_TOOL_DIR" >> "$GITHUB_PATH"
+          echo "SIGN_CLIENT_PATH=$SIGN_CLIENT_PATH" >> "$GITHUB_ENV"
+          echo "====== 签名工具准备就绪 ======"
+      # =====================================================
+
+      # ===================== 代码签名 (CLI) =====================
+      - name: Sign installers (CLI)
+        id: cli-sign
+        shell: bash
+        env:
+          EV_SIGN_KEY: ${{ secrets.EV_SIGN_KEY }}
+        run: |
+          set -e
+          SIGN_CLIENT="$SIGN_CLIENT_PATH"
+          if [ -z "$SIGN_CLIENT" ]; then
+            SIGN_CLIENT="C:/evsign-cli/SignClient.exe"
+          fi
+          if [ ! -f "$SIGN_CLIENT" ]; then
+            echo "❌ SignClient.exe 不存在: $SIGN_CLIENT"
+            exit 1
+          fi
+
+          echo "====== 开始 CLI 签名安装包 ======"
+          echo "签名工具路径: $SIGN_CLIENT"
+
+          SIGN_SUCCESS=true
+
+          # 签名 NSIS (.exe)
+          EXE_FILE=$(ls ${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/nsis/*.exe 2>/dev/null | head -1)
+          if [ -n "$EXE_FILE" ]; then
+            echo ""
+            echo "==> 签名 NSIS: $(basename "$EXE_FILE")"
+            echo "==> 文件路径: $EXE_FILE"
+            EXE_SIZE=$(du -h "$EXE_FILE" | cut -f1)
+            echo "==> 文件大小: $EXE_SIZE"
+
+            SIGN_OUTPUT=$("$SIGN_CLIENT" "$EXE_FILE" -key "$EV_SIGN_KEY" 2>&1) || true
+            EXIT_CODE=$?
+            echo "------ SignClient 输出 ------"
+            echo "$SIGN_OUTPUT"
+            echo "------ 退出码: $EXIT_CODE ------"
+
+            # 判断签名是否成功：检查输出中是否包含"签名完成"且退出码为 0
+            if echo "$SIGN_OUTPUT" | grep -q "签名完成" && [ "$EXIT_CODE" -eq 0 ]; then
+              echo "✅ NSIS 签名成功: $(basename "$EXE_FILE")"
+              echo "EVSIGN_NSIS_RESULT=SUCCESS" >> "$GITHUB_OUTPUT"
+            else
+              echo "❌ NSIS 签名失败！退出码=$EXIT_CODE"
+              echo "EVSIGN_NSIS_RESULT=FAILED" >> "$GITHUB_OUTPUT"
+              SIGN_SUCCESS=false
+            fi
+          else
+            echo "⚠️ 未找到 NSIS .exe 文件，跳过签名"
+            echo "EVSIGN_NSIS_RESULT=SKIPPED" >> "$GITHUB_OUTPUT"
+          fi
+
+          # 签名 MSI (.msi)
+          MSI_FILE=$(ls ${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/msi/*.msi 2>/dev/null | head -1)
+          if [ -n "$MSI_FILE" ]; then
+            echo ""
+            echo "==> 签名 MSI: $(basename "$MSI_FILE")"
+            echo "==> 文件路径: $MSI_FILE"
+            MSI_SIZE=$(du -h "$MSI_FILE" | cut -f1)
+            echo "==> 文件大小: $MSI_SIZE"
+
+            SIGN_OUTPUT=$("$SIGN_CLIENT" "$MSI_FILE" -key "$EV_SIGN_KEY" 2>&1) || true
+            EXIT_CODE=$?
+            echo "------ SignClient 输出 ------"
+            echo "$SIGN_OUTPUT"
+            echo "------ 退出码: $EXIT_CODE ------"
+
+            if echo "$SIGN_OUTPUT" | grep -q "签名完成" && [ "$EXIT_CODE" -eq 0 ]; then
+              echo "✅ MSI 签名成功: $(basename "$MSI_FILE")"
+              echo "EVSIGN_MSI_RESULT=SUCCESS" >> "$GITHUB_OUTPUT"
+            else
+              echo "❌ MSI 签名失败！退出码=$EXIT_CODE"
+              echo "EVSIGN_MSI_RESULT=FAILED" >> "$GITHUB_OUTPUT"
+              SIGN_SUCCESS=false
+            fi
+          else
+            echo "⚠️ 未找到 MSI .msi 文件，跳过签名"
+            echo "EVSIGN_MSI_RESULT=SKIPPED" >> "$GITHUB_OUTPUT"
+          fi
+
+          # 汇总签名结果
+          echo ""
+          echo "====== 签名结果汇总 ======"
+          if [ -n "$EXE_FILE" ]; then
+            echo "NSIS (.exe): $([ "$SIGN_SUCCESS" = true ] && [ -n "$EXE_FILE" ] && echo '✅ 成功' || echo '❌ 失败')"
+          else
+            echo "NSIS (.exe): ⚠️ 跳过"
+          fi
+          echo "=========================="
+
+          if [ "$SIGN_SUCCESS" = "false" ]; then
+            echo "❌ 存在签名失败的文件，中止构建"
+            exit 1
+          fi
+
+          echo "====== CLI 签名全部完成 ======"
+      # =====================================================
+
+      - name: Upload NSIS installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: Cowork-${{ env.VERSION }}-Windows-x64-installer
+          path: ${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/nsis/*.exe
+
+      - name: Upload MSI installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: Cowork-${{ env.VERSION }}-Windows-x64-msi
+          path: ${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/msi/*.msi
+
+      # ===================== 七牛云上传 =====================
+      - name: Install qshell (Windows)
+        run: |
+          curl -L https://github.com/qiniu/qshell/releases/download/v2.18.0/qshell-v2.18.0-windows-amd64.zip -o qshell.zip
+          powershell -Command "Expand-Archive qshell.zip -DestinationPath C:\Windows"
+          qshell version
+          
+      - name: Upload Windows MSI & EXE to Qiniu
+        run: |
+          qshell account "${{ secrets.QINIU_ACCESS_KEY }}" "${{ secrets.QINIU_SECRET_KEY }}" "github-action"
+          
+          $msi = Get-ChildItem "${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/msi/*.msi" | Select-Object -First 1
+          $SAVE_NAME = "aip-cowork-releases/Cowork-${{ env.VERSION }}-Windows-x64.msi"
+          qshell rput --overwrite ${{ secrets.QINIU_BUCKET }} $SAVE_NAME $msi.FullName
+          echo "✅ MSI 上传成功：https://${{ secrets.QINIU_DOMAIN }}/$SAVE_NAME"
+          
+          $exe = Get-ChildItem "${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/nsis/*.exe" | Select-Object -First 1
+          $SAVE_NAME = "aip-cowork-releases/Cowork-${{ env.VERSION }}-Windows-x64.exe"
+          qshell rput --overwrite ${{ secrets.QINIU_BUCKET }} $SAVE_NAME $exe.FullName
+          echo "✅ EXE 上传成功：https://${{ secrets.QINIU_DOMAIN }}/$SAVE_NAME"
+      # =====================================================
+
+      # ===================== 更新 latest.json =====================
+      - name: Update latest.json for Windows platform
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "====== 开始更新 latest.json (windows-x86_64) ======"
+
+          # 列出 bundle 目录所有文件，方便排查
+          echo "📂 NSIS bundle 目录内容："
+          ls -la ${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/nsis/ || true
 
           # 读取 minisign 签名
-          SIG_FILE=$(ls ${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/macos/*.app.tar.gz.sig 2>/dev/null | head -1)
+          # Tauri v2 (createUpdaterArtifacts=true): 生成 .exe.sig
+          # Tauri v1 compatible: 生成 .nsis.zip.sig
+          SIG_FILE=$(ls ${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/nsis/*.exe.sig 2>/dev/null | head -1)
           if [ -z "$SIG_FILE" ]; then
-            echo "❌ 未找到 .app.tar.gz.sig 签名文件，跳过 latest.json 更新"
+            echo "⚠️ 未找到 .exe.sig，尝试查找 .nsis.zip.sig ..."
+            SIG_FILE=$(ls ${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/nsis/*.nsis.zip.sig 2>/dev/null | head -1)
+          fi
+          if [ -z "$SIG_FILE" ]; then
+            echo "❌ 未找到任何签名文件，列出所有 .sig 文件排查："
+            find ${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/ -name "*.sig" 2>/dev/null || echo "（无 .sig 文件）"
+            echo "跳过 latest.json 更新"
             exit 0
           fi
-          SIGNATURE=$(cat "$SIG_FILE")
-          echo "✅ 读取到 minisign 签名 ($(echo "$SIGNATURE" | wc -c) bytes)"
+          SIGNATURE=$(cat "$SIG_FILE" | tr -d '\r\n')
+          echo "✅ 读取到 minisign 签名文件: $(basename "$SIG_FILE")"
 
           QINIU_DOMAIN="https://${{ secrets.QINIU_DOMAIN }}"
           LATEST_JSON_URL="${QINIU_DOMAIN}/aip-cowork-releases/latest.json"
-          DOWNLOAD_URL="${QINIU_DOMAIN}/aip-cowork-releases/Cowork-${VERSION}-macOS-x64.dmg"
-          PLATFORM_KEY="darwin-x86_64"
+          DOWNLOAD_URL="${QINIU_DOMAIN}/aip-cowork-releases/Cowork-${{ env.VERSION }}-Windows-x64.exe"
+          PLATFORM_KEY="windows-x86_64"
 
           # 下载现有 latest.json 或创建空模板
-          if curl -sf -o existing_latest.json "$LATEST_JSON_URL"; then
+          BASE_JSON='{"version":"","notes":"","pub_date":"","platforms":{}}'
+          if curl -sf -o existing_latest.json "$LATEST_JSON_URL" && [ -s existing_latest.json ]; then
             echo "✅ 已下载现有 latest.json"
-            BASE_JSON=$(cat existing_latest.json)
+            # 验证是否为合法 JSON
+            if jq empty existing_latest.json 2>/dev/null; then
+              BASE_JSON=$(cat existing_latest.json)
+            else
+              echo "⚠️ 现有 latest.json 不是合法 JSON，使用空模板"
+            fi
           else
-            echo "⚠️ 未找到现有 latest.json，创建空模板"
-            BASE_JSON='{"version":"","notes":"","pub_date":"","platforms":{}}'
+            echo "⚠️ 未找到现有 latest.json（首次构建），使用空模板"
           fi
 
           # 合并当前平台条目
@@ -374,10 +433,10 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.SELECTED_TAG }}
-          name: Cowork ${{ env.VERSION }} (macOS x64)
+          name: Cowork ${{ env.VERSION }} (Windows x64)
           draft: true
           files: |
-            ${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/dmg/*.dmg
-            ${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/macos/*.app
+            ${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/nsis/*.exe
+            ${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/msi/*.msi
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
