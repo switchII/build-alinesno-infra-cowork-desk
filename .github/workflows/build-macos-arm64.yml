@@ -10,6 +10,13 @@ on:
         type: string
   repository_dispatch:
     types: [trigger-build]
+  workflow_call:
+    inputs:
+      tag:
+        description: 'Git tag'
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: write
@@ -45,8 +52,8 @@ jobs:
           echo "===> 仓库所有 Tags："
           git tag --list
           
-          if [ -n "${{ github.event.inputs.tag }}" ]; then
-            SELECTED_TAG="${{ github.event.inputs.tag }}"
+          if [ -n "${{ inputs.tag }}" ]; then
+            SELECTED_TAG="${{ inputs.tag }}"
             echo "===> 使用手动输入的 Tag：$SELECTED_TAG"
           else
             echo "===> 未输入 Tag，自动获取最新 Tag..."
