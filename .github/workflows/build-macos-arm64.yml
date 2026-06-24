@@ -274,7 +274,7 @@ jobs:
           DMG_PATH=$(ls ${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/dmg/*.dmg)
 
           QINIU_DIR="aip-cowork-releases/"
-          SAVE_NAME="${QINIU_DIR}Cowork-latest-macOS-arm64.dmg" 
+          SAVE_NAME="${QINIU_DIR}Cowork-${VERSION}-macOS-arm64.dmg" 
           
           qshell rput --overwrite ${{ secrets.QINIU_BUCKET }} "$SAVE_NAME" "$DMG_PATH"
           echo "✅ 上传成功：https://${{ secrets.QINIU_DOMAIN }}/$SAVE_NAME"
@@ -297,7 +297,7 @@ jobs:
 
           QINIU_DOMAIN="https://${{ secrets.QINIU_DOMAIN }}"
           LATEST_JSON_URL="${QINIU_DOMAIN}/aip-cowork-releases/latest.json"
-          DOWNLOAD_URL="${QINIU_DOMAIN}/aip-cowork-releases/Cowork-latest-macOS-arm64.dmg"
+          DOWNLOAD_URL="${QINIU_DOMAIN}/aip-cowork-releases/Cowork-${VERSION}-macOS-arm64.dmg"
           PLATFORM_KEY="darwin-aarch64"
 
           # 下载现有 latest.json 或创建空模板
