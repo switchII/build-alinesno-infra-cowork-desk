@@ -345,12 +345,12 @@ jobs:
           qshell account "${{ secrets.QINIU_ACCESS_KEY }}" "${{ secrets.QINIU_SECRET_KEY }}" "github-action"
           
           $msi = Get-ChildItem "${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/msi/*.msi" | Select-Object -First 1
-          $SAVE_NAME = "aip-cowork-releases/Cowork-latest-Windows-x64.msi"
+          $SAVE_NAME = "aip-cowork-releases/Cowork-${{ env.VERSION }}-Windows-x64.msi"
           qshell rput --overwrite ${{ secrets.QINIU_BUCKET }} $SAVE_NAME $msi.FullName
           echo "✅ MSI 上传成功：https://${{ secrets.QINIU_DOMAIN }}/$SAVE_NAME"
           
           $exe = Get-ChildItem "${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/nsis/*.exe" | Select-Object -First 1
-          $SAVE_NAME = "aip-cowork-releases/Cowork-latest-Windows-x64.exe"
+          $SAVE_NAME = "aip-cowork-releases/Cowork-${{ env.VERSION }}-Windows-x64.exe"
           qshell rput --overwrite ${{ secrets.QINIU_BUCKET }} $SAVE_NAME $exe.FullName
           echo "✅ EXE 上传成功：https://${{ secrets.QINIU_DOMAIN }}/$SAVE_NAME"
       # =====================================================
@@ -385,7 +385,7 @@ jobs:
 
           QINIU_DOMAIN="https://${{ secrets.QINIU_DOMAIN }}"
           LATEST_JSON_URL="${QINIU_DOMAIN}/aip-cowork-releases/latest.json"
-          DOWNLOAD_URL="${QINIU_DOMAIN}/aip-cowork-releases/Cowork-latest-Windows-x64.exe"
+          DOWNLOAD_URL="${QINIU_DOMAIN}/aip-cowork-releases/Cowork-${{ env.VERSION }}-Windows-x64.exe"
           PLATFORM_KEY="windows-x86_64"
 
           # 下载现有 latest.json 或创建空模板
