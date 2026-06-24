@@ -15,6 +15,10 @@ on:
         default: ''
         type: string
 
+permissions:
+  contents: write
+  actions: read
+
 jobs:
   # 第一步：macOS ARM64
   macos-arm64:
