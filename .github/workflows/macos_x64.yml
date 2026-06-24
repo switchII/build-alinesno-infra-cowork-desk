@@ -259,7 +259,26 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-           npm run tauri build
+          MAX_RETRIES=3
+          RETRY_DELAY=30
+          for i in $(seq 1 $MAX_RETRIES); do
+            echo "====== 构建尝试 $i/$MAX_RETRIES ======"
+            set +e
+            npm run tauri build 2>&1 | tee build.log
+            BUILD_EXIT=${PIPESTATUS[0]}
+            set -e
+            if [ $BUILD_EXIT -eq 0 ]; then
+              echo "✅ 构建成功"
+              break
+            fi
+            if grep -q "timestamp was expected but was not found" build.log && [ $i -lt $MAX_RETRIES ]; then
+              echo "⚠️ 时间戳服务器暂时不可达，${RETRY_DELAY}s 后重试..."
+              sleep $RETRY_DELAY
+            else
+              echo "❌ 构建失败（非时间戳问题或已达最大重试次数）"
+              exit $BUILD_EXIT
+            fi
+          done
 
       - name: Upload DMG
         uses: actions/upload-artifact@v4
@@ -289,7 +308,7 @@ jobs:
           # ============================================================
           
           # 最终保存的文件名（目录+文件名）
-          SAVE_NAME="${QINIU_DIR}Cowork-latest-macOS-x64.dmg" 
+          SAVE_NAME="${QINIU_DIR}Cowork-${VERSION}-macOS-x64.dmg" 
           
           qshell rput --overwrite ${{ secrets.QINIU_BUCKET }} "$SAVE_NAME" "$DMG_PATH"
           echo "✅ 上传成功：https://${{ secrets.QINIU_DOMAIN }}/$SAVE_NAME"
@@ -312,7 +331,7 @@ jobs:
 
           QINIU_DOMAIN="https://${{ secrets.QINIU_DOMAIN }}"
           LATEST_JSON_URL="${QINIU_DOMAIN}/aip-cowork-releases/latest.json"
-          DOWNLOAD_URL="${QINIU_DOMAIN}/aip-cowork-releases/Cowork-latest-macOS-x64.dmg"
+          DOWNLOAD_URL="${QINIU_DOMAIN}/aip-cowork-releases/Cowork-${VERSION}-macOS-x64.dmg"
           PLATFORM_KEY="darwin-x86_64"
 
           # 下载现有 latest.json 或创建空模板
