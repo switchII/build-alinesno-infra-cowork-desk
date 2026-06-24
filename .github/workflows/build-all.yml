@@ -1,0 +1,40 @@
+name: Build All Platforms
+
+# 多平台串行编排：通过 needs 保证各平台严格顺序构建
+# 避免并行触发 latest.json 导致的竞态覆盖问题
+#
+# 触发方式：手动触发，输入 tag（留空自动最新）
+# 执行顺序：macOS ARM64 → macOS x64 → Windows (CLI Sign)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '指定 Git tag（留空则使用最新 tag）'
+        required: false
+        default: ''
+        type: string
+
+jobs:
+  # 第一步：macOS ARM64
+  macos-arm64:
+    name: macOS ARM64
+    uses: ./.github/workflows/build-macos-arm64.yml
+    with:
+      tag: ${{ inputs.tag }}
+
+  # 第二步：macOS x64（等 ARM64 完成后）
+  macos-x64:
+    name: macOS x64
+    needs: macos-arm64
+    uses: ./.github/workflows/macos_x64.yml
+    with:
+      tag: ${{ inputs.tag }}
+
+  # 第三步：Windows x64（等 x64 完成后）
+  windows:
+    name: Windows x64
+    needs: macos-x64
+    uses: ./.github/workflows/build-windows-cli-sign.yml
+    with:
+      tag: ${{ inputs.tag }}
