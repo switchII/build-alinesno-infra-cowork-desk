@@ -26,6 +26,7 @@ jobs:
     uses: ./.github/workflows/build-macos-arm64.yml
     with:
       tag: ${{ inputs.tag }}
+    secrets: inherit
 
   # 第二步：macOS x64（等 ARM64 完成后）
   macos-x64:
@@ -34,6 +35,7 @@ jobs:
     uses: ./.github/workflows/macos_x64.yml
     with:
       tag: ${{ inputs.tag }}
+    secrets: inherit
 
   # 第三步：Windows x64（等 x64 完成后）
   windows:
@@ -42,3 +44,4 @@ jobs:
     uses: ./.github/workflows/build-windows-cli-sign.yml
     with:
       tag: ${{ inputs.tag }}
+    secrets: inherit
