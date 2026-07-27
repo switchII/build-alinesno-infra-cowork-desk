@@ -100,9 +100,14 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
 
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
       - name: Install dependencies
         working-directory: ${{ env.SOURCE_DIR }}
-        run: npm install
+        run: pnpm install --frozen-lockfile
 
       - name: Install OpenSSL via vcpkg
         run: |
@@ -149,7 +154,7 @@ jobs:
           VERSION=${{ steps.extract-version.outputs.VERSION }}
            
           jq --arg v "$VERSION" \
-            '.version = $v | .productName = "Cowork" | .build.beforeBuildCommand = "npm run build" | .build.beforeDevCommand = "npm run dev" | .bundle.resources = ["runtimes/python/**/*", "runtimes/node/**/*", "runtimes/git/**/*", "runtimes/pandoc/**/*"]' \
+            '.version = $v | .productName = "Cowork" | .build.beforeBuildCommand = "pnpm run build" | .build.beforeDevCommand = "pnpm run dev" | .bundle.resources = ["runtimes/python/**/*", "runtimes/node/**/*", "runtimes/git/**/*", "runtimes/pandoc/**/*"]' \
             src-tauri/tauri.conf.json > tmp.json && mv tmp.json src-tauri/tauri.conf.json
  
           echo "====== 版本配置完成 ======"
@@ -193,7 +198,7 @@ jobs:
           OPENSSL_STATIC: '1'
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: npm run tauri build
+        run: pnpm run tauri build
 
       # ===================== 下载签名工具 =====================
       - name: Download EVSign CLI (SignClient.exe)
