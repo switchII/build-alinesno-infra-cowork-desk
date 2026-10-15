@@ -168,20 +168,37 @@ jobs:
           cat src-tauri/tauri.conf.json | grep '"version"'
           echo "=========================="
 
+      - name: Resolve bundled runtimes fingerprint
+        id: runtimes
+        working-directory: ${{ env.SOURCE_DIR }}
+        shell: bash
+        run: |
+          # 缓存 key 由 download-runtimes.sh 的内容决定：脚本里任何版本号（Node/Python/Git/Pandoc）
+          # 变化都会自动换 key。以前是手写字面量，出现过脚本升到 Node 22、key 还写着 node20，
+          # 命中旧缓存后目录存在即跳过下载，把过期运行时打进了安装包。
+          FP="$( (sha256sum scripts/download-runtimes.sh 2>/dev/null || shasum -a 256 scripts/download-runtimes.sh) | cut -c1-16)"
+          echo "fingerprint=$FP" >> "$GITHUB_OUTPUT"
+          echo "==> bundled runtimes fingerprint: $FP"
+
       - name: Cache bundled runtimes
         uses: actions/cache@v4
         with:
           path: ${{ env.SOURCE_DIR }}/src-tauri/runtimes
-          key: runtimes-macos-arm64-node20-py312-git247-pandoc364-v1
+          key: runtimes-macos-arm64-${{ steps.runtimes.outputs.fingerprint }}
+          # 禁止部分命中：命中到别的指纹的缓存，等于把不匹配的运行时打进安装包
+          restore-keys: ""
 
       - name: Download bundled runtimes (macOS ARM64)
         working-directory: ${{ env.SOURCE_DIR }}
         run: |
-          if [ ! -d "src-tauri/runtimes/python" ] || [ ! -d "src-tauri/runtimes/node" ] || [ ! -d "src-tauri/runtimes/git" ] || [ ! -d "src-tauri/runtimes/pandoc" ]; then
-            chmod +x scripts/download-runtimes.sh
-            bash scripts/download-runtimes.sh macos-arm64
+          chmod +x scripts/download-runtimes.sh
+          # 内容级校验：比对产物里的指纹与当前脚本指纹，而不是只看目录是否存在
+          CACHED_FP="$(cat src-tauri/runtimes/.fingerprint 2>/dev/null || echo none)"
+          if [ "$CACHED_FP" = "${{ steps.runtimes.outputs.fingerprint }}" ]; then
+            echo "==> Using cached runtimes (fingerprint $CACHED_FP matched)"
           else
-            echo "==> Using cached runtimes"
+            echo "==> 指纹不匹配（cached=$CACHED_FP），重新下载 bundled runtimes"
+            bash scripts/download-runtimes.sh macos-arm64
           fi
           echo "=== Bundled runtimes ==="
           ls src-tauri/runtimes/python/bin/ | head -5
@@ -196,6 +213,10 @@ jobs:
           
           RUNTIME_DIR="${{ env.SOURCE_DIR }}/src-tauri/runtimes"
           IDENTITY="${{ secrets.APPLE_SIGNING_IDENTITY }}"
+          # 重签必须带 entitlements：只加 --options runtime 而不传 --entitlements，会把 Node
+          # 官方签名里的 allow-jit 剥掉，V8 初始化调用 pthread_jit_write_protect_np 直接 SIGTRAP。
+          # 表现为 node -v 正常（短路于 V8 初始化之前）、node -e 必崩，设置页误报「Node.js 未安装」。
+          RUNTIME_ENT="${{ env.SOURCE_DIR }}/src-tauri/runtimes-codesign.entitlements"
           
           if [ -z "$IDENTITY" ]; then
             echo "⚠️ APPLE_SIGNING_IDENTITY 未设置，跳过运行时签名"
@@ -227,7 +248,7 @@ jobs:
             # 只对 Mach-O 文件签名
             if file "$file" | grep -q "Mach-O"; then
               echo "  Signing: $file"
-              if codesign --force --options runtime --sign "$IDENTITY" --timestamp "$file" 2>&1; then
+              if codesign --force --options runtime --entitlements "$RUNTIME_ENT" --sign "$IDENTITY" --timestamp "$file" 2>&1; then
                 SIGN_COUNT=$((SIGN_COUNT + 1))
               else
                 echo "  ⚠️ Failed to sign: $file"
@@ -238,6 +259,16 @@ jobs:
           
           echo ""
           echo "✅ 签名完成：成功 $SIGN_COUNT 个，失败 $SIGN_FAIL 个"
+
+          # 签名后校验：确认 JIT entitlement 真的写进去了，避免问题漏到用户机器上才发现
+          if [ -f "$RUNTIME_DIR/node/bin/node" ]; then
+            if codesign -d --entitlements - "$RUNTIME_DIR/node/bin/node" 2>/dev/null | grep -q allow-jit; then
+              echo "✅ node 已带 allow-jit entitlement"
+            else
+              echo "❌ node 缺少 allow-jit，运行时会 V8 初始化 SIGTRAP"
+              exit 1
+            fi
+          fi
           
           # 清理临时 keychain
           security list-keychains -d user -s $(security list-keychains -d user | sed s/'"'//g | grep -v "$KEYCHAIN")
