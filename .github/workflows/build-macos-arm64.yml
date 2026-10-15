@@ -223,6 +223,18 @@ jobs:
             exit 0
           fi
           
+          # 前置校验：entitlements 必须是严格合法的 XML。plutil 对「注释里出现连续两个减号」
+          # 是放行的，但 codesign 会把原始 XML 交给 AMFI 解析，AMFI 严格报错，一旦不合法
+          # 就是下面全部运行时签名集体失败（AMFIUnserializeXML: syntax error near line N）。
+          if [ ! -f "$RUNTIME_ENT" ]; then
+            echo "❌ 缺少 entitlements 文件：$RUNTIME_ENT"
+            exit 1
+          fi
+          if ! xmllint --noout "$RUNTIME_ENT"; then
+            echo "❌ entitlements 不是合法 XML，见上方 parser error"
+            exit 1
+          fi
+          
           # 导入 Apple 证书到临时 keychain
           CERT_PATH="/tmp/apple_cert.p12"
           echo "${{ secrets.APPLE_CERTIFICATE }}" | base64 --decode > "$CERT_PATH"
@@ -259,16 +271,6 @@ jobs:
           
           echo ""
           echo "✅ 签名完成：成功 $SIGN_COUNT 个，失败 $SIGN_FAIL 个"
-
-          # 签名后校验：确认 JIT entitlement 真的写进去了，避免问题漏到用户机器上才发现
-          if [ -f "$RUNTIME_DIR/node/bin/node" ]; then
-            if codesign -d --entitlements - "$RUNTIME_DIR/node/bin/node" 2>/dev/null | grep -q allow-jit; then
-              echo "✅ node 已带 allow-jit entitlement"
-            else
-              echo "❌ node 缺少 allow-jit，运行时会 V8 初始化 SIGTRAP"
-              exit 1
-            fi
-          fi
           
           # 清理临时 keychain
           security list-keychains -d user -s $(security list-keychains -d user | sed s/'"'//g | grep -v "$KEYCHAIN")
@@ -277,6 +279,18 @@ jobs:
           if [ "$SIGN_FAIL" -gt 0 ]; then
             echo "❌ 有 $SIGN_FAIL 个文件签名失败，请检查"
             exit 1
+          fi
+          
+          # 签名结果校验：确认 JIT entitlement 真的写进去了，避免问题漏到用户机器上才发现。
+          # 必须放在 SIGN_FAIL 判断之后：签名失败时二进制仍保留厂商旧签名，而 Node 官方
+          # 签名里本来就带 allow-jit，先跑会把全部失败误报成成功。
+          if [ -f "$RUNTIME_DIR/node/bin/node" ]; then
+            if codesign -d --entitlements - "$RUNTIME_DIR/node/bin/node" 2>/dev/null | grep -q allow-jit; then
+              echo "✅ node 已带 allow-jit entitlement"
+            else
+              echo "❌ node 缺少 allow-jit，运行时会 V8 初始化 SIGTRAP"
+              exit 1
+            fi
           fi
           
           echo "====== bundled runtimes 代码签名完成 ======"
