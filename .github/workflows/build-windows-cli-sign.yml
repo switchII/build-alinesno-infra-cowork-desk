@@ -169,21 +169,38 @@ jobs:
           cat src-tauri/tauri.conf.json | grep '"version"'
           echo "=========================="
 
+      - name: Resolve bundled runtimes fingerprint
+        id: runtimes
+        working-directory: ${{ env.SOURCE_DIR }}
+        shell: bash
+        run: |
+          # 缓存 key 由 download-runtimes.sh 的内容决定：脚本里任何版本号（Node/Python/Git/Pandoc）
+          # 变化都会自动换 key。以前是手写字面量，出现过脚本升到 Node 22、key 还写着 node20，
+          # 命中旧缓存后目录存在即跳过下载，把过期运行时打进了安装包。
+          FP="$( (sha256sum scripts/download-runtimes.sh 2>/dev/null || shasum -a 256 scripts/download-runtimes.sh) | cut -c1-16)"
+          echo "fingerprint=$FP" >> "$GITHUB_OUTPUT"
+          echo "==> bundled runtimes fingerprint: $FP"
+
       - name: Cache bundled runtimes
         uses: actions/cache@v4
         with:
           path: ${{ env.SOURCE_DIR }}/src-tauri/runtimes
-          key: runtimes-win-x64-node20-py312-git247-pandoc364-v1
+          key: runtimes-win-x64-${{ steps.runtimes.outputs.fingerprint }}
+          # 禁止部分命中：命中到别的指纹的缓存，等于把不匹配的运行时打进安装包
+          restore-keys: ""
 
       - name: Download bundled runtimes (Windows)
         working-directory: ${{ env.SOURCE_DIR }}
         shell: bash
         run: |
-          if [ ! -d "src-tauri/runtimes/python" ] || [ ! -d "src-tauri/runtimes/node" ] || [ ! -d "src-tauri/runtimes/git" ] || [ ! -d "src-tauri/runtimes/pandoc" ]; then
-            chmod +x scripts/download-runtimes.sh
-            bash scripts/download-runtimes.sh windows-x64
+          chmod +x scripts/download-runtimes.sh
+          # 内容级校验：比对产物里的指纹与当前脚本指纹，而不是只看目录是否存在
+          CACHED_FP="$(cat src-tauri/runtimes/.fingerprint 2>/dev/null || echo none)"
+          if [ "$CACHED_FP" = "${{ steps.runtimes.outputs.fingerprint }}" ]; then
+            echo "==> Using cached runtimes (fingerprint $CACHED_FP matched)"
           else
-            echo "==> Using cached runtimes"
+            echo "==> 指纹不匹配（cached=$CACHED_FP），重新下载 bundled runtimes"
+            bash scripts/download-runtimes.sh windows-x64
           fi
           echo "=== Bundled runtimes ==="
           ls src-tauri/runtimes/python/ | head -5
