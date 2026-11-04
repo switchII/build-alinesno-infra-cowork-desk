@@ -1,0 +1,861 @@
+name: build windows x64 (CLI Sign · Custom)
+
+# 与 build-windows-cli-sign.yml 同源的「私有版出包」副本。标准版走原 workflow，这份只在
+# 传入私有参数时改变产物的身份与分发，参数全空时行为与原 workflow 一致。
+#
+# 入参（四个新增）：
+#   1) icon / icon_url —— 桌面图标（PNG，建议 1024x1024、带透明通道），构建时用 `tauri icon`
+#                          重生成 src-tauri/icons 全套（含 icon.ico；NSIS 未单独配 installerIcon，
+#                          向导图跟着 bundle.icon 走，所以一次重生成就把 exe/快捷方式/任务栏/
+#                          卸载条目/安装向导全覆盖了）。
+#                          ⚠️ 只收 PNG：ico 里无法还原各尺寸 PNG，收 ico 会只换掉 exe 图标、
+#                          任务栏与快捷方式仍是旧图。
+#                          两种给法二选一：icon（网页表单选文件，type: file 只能在网页表单里填）
+#                          / icon_url（PNG 直链，gh CLI 与 API 触发用的就是这条）。
+#   2) api_base_url    —— 私有后台地址，构建期以环境变量覆盖 .env.production 里的
+#                          VITE_API_BASE_URL（Vite 里进程环境变量优先级高于 .env 文件）。
+#   3) private_name    —— 私有版产品名（客户看到的名字）：写进 productName / 窗口标题，
+#                          决定安装目录、卸载列表项、快捷方式名与产物文件名。
+#                          ⚠️ 应用内显示的产品名/Logo/副标题/主题/登录地址**不归这里管**，它们
+#                          由那台后台的 /api/infra/cowork/client/brand 运行时下发（见
+#                          src/services/brandCache.ts + src/desktop/brandSync.ts）—— 只要
+#                          api_base_url 指过去了，客户端重开就跟着变；这里管的是安装包级别的身份。
+#   4) private_slug    —— 可选，覆盖自动推导的私有命名空间（默认取后台域名的主段，
+#                          如 https://cowork.acme.com → acme）。同一主域下有多套部署时才需要。
+#
+# api_base_url 与 private_name 必须同时给、同时不给：半私有包（换了身份没换地址，或换了地址
+# 还顶着标准身份）会被直接拒绝。不给这两个参数时，产物即标准包，走标准发布链路。
+#
+# 私有包与标准包的隔离方式（`private_name`+`api_base_url` 齐备时）：
+#   - identifier: com.aipcowork.app → com.aipcowork.<slug>，与标准包可同机共存、互不覆盖升级；
+#     顺带解决了「本机 localStorage 残留旧连接设置盖掉内置地址」的问题：WebView2 profile 与
+#     localStorage 按 identifier 落在 %APPDATA%/%LOCALAPPDATA%\<identifier>，换了标识就是干净档案。
+#   - 升级通道: plugins.updater.endpoints 改指 aip-cowork-releases/private/<slug>/latest.json，
+#     产物也传到同一目录。私有包只会收到私有包的新版本；不这么做的后果是私有客户端去读官方
+#     feed，一旦被推成标准包，图标与内置后台地址会被一起换掉。
+#   - 产物 artifact 名与 Release 名带 <产品名>/<slug> 标识，不与标准包重名。
+#   签名仍用现有 TAURI_SIGNING_PRIVATE_KEY（私有 feed 的 latest.json 用同一把 key 出 minisign
+#   签名，客户端校验直接过）；换客户自己的 key 不在本 workflow 范围内。
+#
+# ⚠️ 三条已知边界，别当成「完全独立」：
+#   1. `~/.aipcowork/`（db / sessions / conversations / settings / memories）在 Rust 侧是
+#      `home/.aipcowork` 硬编码的（src-tauri/src/common.rs:get_memory_base），**不跟 identifier 走**：
+#      同一台机器同时装标准版和私有版，这一份应用状态是共用的。跟着 identifier 走的只有
+#      %APPDATA%/%LOCALAPPDATA% 下的 WebView2 profile（含前端 localStorage）。
+#   2. deep-link scheme `aipcowork` 与右键菜单的 HKCU\...\AIPCowork.Consult 是全局同名注册，
+#      同机共存时以「后注册的那个」（即后装的包）为准，SSO 回调/右键入口会指向它。
+#      这里不改 scheme 是故意的：后台下发的回调地址、既有深链约定都是 aipcowork://。
+#   3. 版本号取自 tag，私有包不给版本加后缀：升级判定是 semver 比较，同一 tag 的私有包与标准包
+#      版本号相同，靠「各走各的 feed」隔离；出私有新版仍需打新 tag。
+
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '指定要构建的 Git tag（留空则使用最新 tag）'
+        required: false
+        default: ''
+        type: string
+      icon:
+        description: '桌面图标（网页表单上传 PNG，建议 1024x1024；与 icon_url 二选一，都留空则用仓库自带图标）'
+        required: false
+        type: file
+      icon_url:
+        description: '桌面图标的 PNG 直链（用于 gh CLI/API 触发时替代表单上传）'
+        required: false
+        default: ''
+        type: string
+      api_base_url:
+        description: '私有后台地址（如 https://cowork.customer.com；与 private_name 同时给或同时不给）'
+        required: false
+        default: ''
+        type: string
+      private_name:
+        description: '私有版产品名（如「招银智能助手」；决定安装目录/卸载项/快捷方式名）'
+        required: false
+        default: ''
+        type: string
+      private_slug:
+        description: '私有命名空间（可选，留空按后台域名推导；同主域多套部署时才需要填）'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: write
+  actions: read
+
+env:
+  NODE_VERSION: 24
+  SOURCE_DIR: source
+  QINIU_BUCKET: ${{ secrets.QINIU_BUCKET }}
+  QINIU_DOMAIN: ${{ secrets.QINIU_DOMAIN }}
+
+jobs:
+  build-windows:
+    name: Build Windows x64 (Custom)
+    runs-on: windows-latest
+
+    steps:
+      - name: Clone source repository and checkout target tag
+        id: clone-tag
+        shell: bash
+        run: |
+          REPO="${{ secrets.COWORK_GIT_REPOSITORY_URL }}"
+          REPO="${REPO#https://}"
+          REPO="${REPO#http://}"
+          REPO_URL="https://${{ secrets.COWORK_GIT_REPOSITORY_USER }}:${{ secrets.COWORK_GIT_REPOSITORY_PASSWORD }}@${REPO}"
+
+          git clone "$REPO_URL" source
+          cd source
+
+          echo "===> 拉取最新 Tags..."
+          git fetch --tags --force
+
+          echo "===> 仓库所有 Tags："
+          git tag --list
+
+          if [ -n "${{ inputs.tag }}" ]; then
+            SELECTED_TAG="${{ inputs.tag }}"
+            echo "===> 使用手动输入的 Tag：$SELECTED_TAG"
+          else
+            echo "===> 未输入 Tag，自动获取最新 Tag..."
+            SELECTED_TAG=$(git describe --tags --abbrev=0 2>/dev/null || git rev-list --tags --max-count=1 | xargs git describe --tags 2>/dev/null)
+            if [ -z "$SELECTED_TAG" ]; then
+              echo "❌ 错误：仓库中没有任何 Tag！"
+              exit 1
+            fi
+            echo "===> 自动获取到最新 Tag：$SELECTED_TAG"
+          fi
+
+          git checkout "$SELECTED_TAG"
+          echo "===> 最终使用的 Tag：$SELECTED_TAG"
+          echo "SELECTED_TAG=$SELECTED_TAG" >> $GITHUB_OUTPUT
+
+          echo -e "\n====================================="
+          echo "📄 查看文件：src-tauri/tauri.conf.json"
+          echo "====================================="
+          cat src-tauri/tauri.conf.json
+          echo -e "=====================================\n"
+
+          echo -e "\n====================================="
+          echo "📝 最后一次 Git 提交日志"
+          echo "====================================="
+          git log -1 --stat
+
+      - name: Extract version from tag
+        id: extract-version
+        shell: bash
+        run: |
+          TAG="${{ steps.clone-tag.outputs.SELECTED_TAG }}"
+          VERSION="${TAG#v}"
+
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "SELECTED_TAG=$TAG" >> $GITHUB_ENV
+
+          echo "✅ 最终版本信息："
+          echo "Tag = $TAG"
+          echo "版本号 = $VERSION"
+
+      # ===================== 私有出包参数落定 =====================
+      - name: Resolve private build params
+        id: custom
+        # 自由文本一律经 env 传给 bash：产品名里出现引号/反引号时，直接内插进 run 脚本会把
+        # 整段 YAML 撑坏（原版对 tag 是这么做的，但 tag 不含这些字符，名字可不好说）。
+        env:
+          IN_API: ${{ inputs.api_base_url }}
+          IN_NAME: ${{ inputs.private_name }}
+          IN_SLUG: ${{ inputs.private_slug }}
+          IN_ICON: ${{ inputs.icon }}
+          IN_ICON_URL: ${{ inputs.icon_url }}
+        shell: bash
+        run: |
+          # ---------- 后台地址与产品名 ----------
+          API_BASE_URL="${IN_API%/}"   # 去掉末尾斜杠，防止拼出 https://host//api/... （网关对 // 容忍度不一）
+          PRIVATE_NAME="$IN_NAME"
+          # 半私有包直接拒绝：换了身份没换地址、或换了地址还顶标准身份，现场都归不了因
+          if [ -n "$API_BASE_URL" ] && [ -z "$PRIVATE_NAME" ]; then
+            echo "❌ 给了 api_base_url 就必须给 private_name：私有包要同时换身份与后台地址"
+            exit 1
+          fi
+          if [ -z "$API_BASE_URL" ] && [ -n "$PRIVATE_NAME" ]; then
+            echo "❌ 给了 private_name 就必须给 api_base_url：只换名字不换地址的包不算私有版"
+            exit 1
+          fi
+          IS_PRIVATE=false
+          if [ -n "$API_BASE_URL" ]; then
+            case "$API_BASE_URL" in
+              https://*|http://*) ;;
+              *) echo "❌ api_base_url 必须以 http:// 或 https:// 开头：$API_BASE_URL"; exit 1 ;;
+            esac
+            IS_PRIVATE=true
+          fi
+
+          # ---------- 私有命名空间（identifier 尾段 / 七牛目录 / 产物名 共用）----------
+          SLUG="$IN_SLUG"
+          if [ -z "$SLUG" ]; then
+            HOST="${API_BASE_URL#*://}"; HOST="${HOST%%/*}"; HOST="${HOST%%:*}"; HOST="${HOST##*@}"
+            IFS='.' read -ra PARTS <<< "$HOST"
+            N=${#PARTS[@]}
+            if [ "$N" -ge 2 ] && [[ "${PARTS[$((N-1))]}" =~ ^[A-Za-z][A-Za-z]{1,5}$ ]]; then
+              SLUG="${PARTS[$((N-2))]}"                              # cowork.acme.com → acme（取主域段，别拿 com 当命名空间）
+            elif [[ "$HOST" =~ ^[0-9.]+$ ]]; then
+              SLUG="ip-$(printf '%s' "$HOST" | tr '.' '-')"          # 内网 IP 直连
+            else
+              SLUG="${PARTS[$((N-1))]}"                               # localhost 之类单段
+            fi
+          fi
+          SLUG=$(printf '%s' "$SLUG" | tr 'A-Z' 'a-z' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' | cut -c1-32)
+          [ -z "$SLUG" ] && SLUG="custom"
+          case "$SLUG" in
+            [a-z]*) ;;
+            *) SLUG="p-$SLUG" ;;   # identifier 的每段都得以字母开头
+          esac
+
+          # ---------- 身份与分发链路 ----------
+          # 非私有时把这些值定成仓库原样，后面的 Patch/上传步骤就不必再分两套写法
+          PRODUCT_NAME="Cowork"
+          IDENTIFIER="com.aipcowork.app"
+          BRAND="Cowork"
+          ARTIFACT_TAG=""
+          RELEASE_PREFIX="aip-cowork-releases"
+          if [ "$IS_PRIVATE" = true ]; then
+            PRODUCT_NAME="$PRIVATE_NAME"
+            IDENTIFIER="com.aipcowork.$SLUG"
+            BRAND=$(printf '%s' "$PRIVATE_NAME" | sed -E 's/[^A-Za-z0-9._-]+/-/g; s/^-+//; s/-+$//' | cut -c1-40)
+            # 纯中文名清完就空了：七牛 key 与 artifact 名要进 URL 和命令行，兜底用 slug
+            if [ "${#BRAND}" -lt 3 ]; then BRAND="Cowork-$SLUG"; fi
+            ARTIFACT_TAG="-$SLUG"
+            RELEASE_PREFIX="aip-cowork-releases/private/$SLUG"
+          fi
+          UPDATER_FEED="https://${QINIU_DOMAIN}/${RELEASE_PREFIX}/latest.json"
+
+          # ---------- 图标来源：表单上传（workflow artifact，名字就是入参名）优先于直链 ----------
+          ICON_ARTIFACT="$IN_ICON"
+          ICON_URL="$IN_ICON_URL"
+          ICON_SOURCE=none
+          if [ -n "$ICON_ARTIFACT" ]; then
+            ICON_SOURCE=artifact
+          elif [ -n "$ICON_URL" ]; then
+            ICON_SOURCE=url
+          fi
+          if [ -n "$ICON_URL" ]; then
+            case "$ICON_URL" in
+              https://*|http://*) ;;
+              *) echo "❌ icon_url 必须以 http:// 或 https:// 开头：$ICON_URL"; exit 1 ;;
+            esac
+          fi
+          if [ "$ICON_SOURCE" = "artifact" ]; then
+            ICON_DESC="上传文件（artifact：${ICON_ARTIFACT}）"
+          elif [ "$ICON_SOURCE" = "url" ]; then
+            ICON_DESC="直链：$ICON_URL"
+          else
+            ICON_DESC="（未提供，沿用仓库自带图标）"
+          fi
+
+          {
+            echo "api_base_url=$API_BASE_URL"
+            echo "is_private=$IS_PRIVATE"
+            echo "slug=$SLUG"
+            echo "product_name=$PRODUCT_NAME"
+            echo "updater_feed=$UPDATER_FEED"
+            echo "icon_artifact=$ICON_ARTIFACT"
+            echo "icon_url=$ICON_URL"
+            echo "icon_source=$ICON_SOURCE"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "IS_PRIVATE=$IS_PRIVATE"
+            echo "API_BASE_URL=$API_BASE_URL"
+            echo "SLUG=$SLUG"
+            echo "PRODUCT_NAME=$PRODUCT_NAME"
+            echo "IDENTIFIER=$IDENTIFIER"
+            echo "BRAND=$BRAND"
+            echo "ARTIFACT_TAG=$ARTIFACT_TAG"
+            echo "RELEASE_PREFIX=$RELEASE_PREFIX"
+            echo "UPDATER_FEED=$UPDATER_FEED"
+          } >> "$GITHUB_ENV"
+
+          echo "====== 出包参数 ======"
+          if [ "$IS_PRIVATE" = true ]; then
+            echo "包类型   : 私有版（${PRODUCT_NAME} / ${IDENTIFIER}）"
+            echo "后台地址 : $API_BASE_URL"
+            echo "命名空间 : $SLUG"
+            echo "发布目录 : $RELEASE_PREFIX"
+            echo "升级通道 : $UPDATER_FEED"
+          else
+            echo "包类型   : 标准版（身份与发布链路均沿用仓库配置）"
+            echo "后台地址 : （未指定，打包走仓库 .env.production）"
+            echo "发布目录 : $RELEASE_PREFIX"
+            echo "升级通道 : （不改，沿用 tauri.conf.json 内置 endpoint）"
+          fi
+          echo "桌面图标 : $ICON_DESC"
+          echo "======================"
+
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Install dependencies
+        working-directory: ${{ env.SOURCE_DIR }}
+        run: pnpm install --frozen-lockfile
+
+      # ===================== 私有桌面图标 =====================
+      # 必须排在 Install dependencies 之后：tauri icon 由 @tauri-apps/cli 提供，
+      # 它是 devDependencies，pnpm install 之前根本调不动。
+      - name: Fetch icon (form upload)
+        if: steps.custom.outputs.icon_source == 'artifact'
+        # type: file 上传的文件会以「入参名」为名字存成 workflow artifact，
+        # 只能用 download-workflow-artifact 取（download-artifact 取不到 workflow 级产物）。
+        # 钉 @main：该 action 未确认存在 v1 标签，@main 是文档示例用法，不会拉空。
+        uses: actions/download-workflow-artifact@main
+        with:
+          name: ${{ steps.custom.outputs.icon_artifact }}
+          path: icon-in
+
+      - name: Fetch icon (direct URL)
+        if: steps.custom.outputs.icon_source == 'url'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p icon-in
+          echo "==> 下载图标直链：${{ steps.custom.outputs.icon_url }}"
+          curl -fsSL "${{ steps.custom.outputs.icon_url }}" -o icon-in/icon.png
+
+      - name: Stage custom icon
+        if: steps.custom.outputs.icon_source != 'none'
+        shell: bash
+        run: |
+          set -euo pipefail
+          SRC_ICON=$(find icon-in -type f -iname '*.png' | head -1 || true)
+          if [ -z "$SRC_ICON" ]; then
+            echo "❌ 图标源里没有 PNG 文件（只支持 PNG：ico 无法还原各尺寸图标，会只换掉 exe 图标）"
+            echo "--- icon-in 实际内容 ---"
+            ls -laR icon-in/ || echo "（icon-in 为空）"
+            exit 1
+          fi
+          mkdir -p icon-src
+          cp "$SRC_ICON" icon-src/icon.png
+          echo "==> 定制图标就位：$(ls -la icon-src/icon.png)"
+
+      - name: Apply custom desktop icon
+        if: steps.custom.outputs.icon_source != 'none'
+        working-directory: ${{ env.SOURCE_DIR }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "==> 使用上传图标：../icon-src/icon.png"
+          file ../icon-src/icon.png 2>/dev/null || true
+
+          # tauri icon 会重生成全套：32/128/128@2x PNG、icon.ico、icon.icns、各尺寸 Square*Logo
+          pnpm run tauri icon ../icon-src/icon.png --output src-tauri/icons
+
+          echo "====== 重生成后的图标清单 ======"
+          ls -la src-tauri/icons/
+          if [ ! -f src-tauri/icons/icon.ico ]; then
+            echo "❌ icon.ico 未生成，Windows 安装包图标不会是定制图标"
+            exit 1
+          fi
+      # =========================================================
+
+      - name: Install OpenSSL via vcpkg
+        run: |
+          vcpkg integrate install
+          vcpkg install openssl:x64-windows-static
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ env.SOURCE_DIR }}/src-tauri -> target
+
+      - name: Verify code version
+        shell: bash
+        run: |
+          cd ${{ env.SOURCE_DIR }}
+
+          echo "====================================="
+          echo "✅ 验证代码版本（无git，不报错）"
+          echo "====================================="
+
+          echo -e "\n====================================="
+          echo "📄 src-tauri/tauri.conf.json 版本号"
+          echo "====================================="
+          cat src-tauri/tauri.conf.json | grep '"version"'
+
+          echo -e "\n====================================="
+          echo "📄 package.json 版本号"
+          echo "====================================="
+          cat package.json | grep '"version"'
+
+      - name: Patch tauri.conf.json
+        working-directory: ${{ env.SOURCE_DIR }}
+        shell: bash
+        run: |
+          echo "====== 开始版本配置 ======"
+          cat src-tauri/tauri.conf.json | grep '"version"'
+          echo "=========================="
+
+          VERSION=${{ steps.extract-version.outputs.VERSION }}
+
+          # 标准包：PRODUCT_NAME/IDENTIFIER 就是仓库原值（Cowork / com.aipcowork.app），
+          # 这三处赋值等价于原版那句 `.productName = "Cowork"`，不改变既有行为。
+          # 私有包：productName 换成客户名（决定安装目录、卸载列表项、快捷方式名、产物文件名），
+          # identifier 换成 com.aipcowork.<slug>（与标准包同机共存、拿到干净的 WebView 档案），
+          # 窗口标题一并换掉（首屏品牌还没同步回来时不至于露出 Cowork）。
+          # updater endpoints 只在私有时改指私有 feed：标准包的 feed 是仓库里那份，不动。
+          # deep-link scheme 与右键菜单键**故意不改**：后台回调地址与既有约定都是 aipcowork://。
+          jq --arg v "$VERSION" --arg pn "$PRODUCT_NAME" --arg id "$IDENTIFIER" \
+            --arg feed "$UPDATER_FEED" --argjson priv "$IS_PRIVATE" \
+            '.version = $v
+             | .productName = $pn
+             | .identifier = $id
+             | (.app.windows[].title) = $pn
+             | (if $priv then .plugins.updater.endpoints = [$feed] else . end)
+             | .build.beforeBuildCommand = "pnpm run build"
+             | .build.beforeDevCommand = "pnpm run dev"
+             | .bundle.resources = ["runtimes/python/**/*", "runtimes/node/**/*", "runtimes/git/**/*", "runtimes/pandoc/**/*", "runtimes/uv/**/*"]' \
+            src-tauri/tauri.conf.json > tmp.json && mv tmp.json src-tauri/tauri.conf.json
+
+          echo "====== 版本配置完成 ======"
+          cat src-tauri/tauri.conf.json | grep '"version"'
+          echo "=========================="
+
+      - name: 🔍 打印最终 tauri.conf.json（排查版本）
+        working-directory: ${{ env.SOURCE_DIR }}
+        shell: bash
+        run: |
+          echo "====== 最终版本配置 ======"
+          cat src-tauri/tauri.conf.json | grep '"version"'
+          echo "=========================="
+
+          echo "====== 最终图标配置 ======"
+          jq '.bundle.icon' src-tauri/tauri.conf.json
+          echo "=========================="
+
+          echo "====== 最终身份与升级通道 ======"
+          jq -c '{productName, identifier, title: .app.windows[0].title, endpoints: .plugins.updater.endpoints}' src-tauri/tauri.conf.json
+          echo "=================================="
+
+          # 出厂前最后一次硬校验：身份写错不会报错，只会静默产出一个「顶着标准身份的私有包」
+          # （装到标准包目录、共用 WebView 档案、被官方 feed 推回标准版），那种包现场归不了因。
+          CONF_ID=$(jq -r '.identifier' src-tauri/tauri.conf.json)
+          CONF_PN=$(jq -r '.productName' src-tauri/tauri.conf.json)
+          CONF_EP=$(jq -rc '.plugins.updater.endpoints' src-tauri/tauri.conf.json)
+          if [ "$IS_PRIVATE" = "true" ]; then
+            if [ "$CONF_ID" = "com.aipcowork.app" ]; then
+              echo "❌ 私有包 identifier 没换掉，仍与标准包同目录：$CONF_ID"; exit 1
+            fi
+            if [ "$CONF_PN" != "$PRODUCT_NAME" ]; then
+              echo "❌ productName 与入参不一致：期望 ${PRODUCT_NAME}，实际 ${CONF_PN}"; exit 1
+            fi
+            EXPECT_EP="[\"$UPDATER_FEED\"]"
+            if [ "$CONF_EP" != "$EXPECT_EP" ]; then
+              echo "❌ 升级通道没指向私有 feed：期望 ${EXPECT_EP}，实际 ${CONF_EP}"
+              echo "   （留着官方 feed，这个私有包会被推成标准包，图标和内置地址一起被换掉）"; exit 1
+            fi
+            echo "✅ 私有身份校验通过：$CONF_PN / $CONF_ID / $CONF_EP"
+          else
+            if [ "$CONF_ID" != "com.aipcowork.app" ] || [ "$CONF_PN" != "Cowork" ]; then
+              echo "❌ 标准包身份被改动了：${CONF_PN} / ${CONF_ID}（应为 Cowork / com.aipcowork.app）"; exit 1
+            fi
+            echo "✅ 标准身份校验通过（升级通道沿用仓库配置：${CONF_EP}）"
+          fi
+
+      - name: Resolve bundled runtimes fingerprint
+        id: runtimes
+        working-directory: ${{ env.SOURCE_DIR }}
+        shell: bash
+        run: |
+          # 缓存 key 由「download-runtimes.sh + requirements-base.txt」的内容决定：
+          # 脚本里任何版本号（Node/Python/Git/Pandoc）或 base 包清单变化都会自动换 key。
+          FP="$( (cat scripts/download-runtimes.sh scripts/requirements-base.txt || true) | (sha256sum 2>/dev/null || shasum -a 256) | cut -c1-16)"
+          echo "fingerprint=$FP" >> "$GITHUB_OUTPUT"
+          echo "==> bundled runtimes fingerprint: $FP"
+
+      - name: Cache bundled runtimes
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.SOURCE_DIR }}/src-tauri/runtimes
+          key: runtimes-win-x64-${{ steps.runtimes.outputs.fingerprint }}
+          # 禁止部分命中：命中到别的指纹的缓存，等于把不匹配的运行时打进安装包
+          restore-keys: ""
+
+      - name: Download bundled runtimes (Windows)
+        working-directory: ${{ env.SOURCE_DIR }}
+        shell: bash
+        run: |
+          chmod +x scripts/download-runtimes.sh
+          # 内容级校验：比对产物里的指纹与当前脚本指纹，而不是只看目录是否存在
+          CACHED_FP="$(cat src-tauri/runtimes/.fingerprint 2>/dev/null || echo none)"
+          if [ "$CACHED_FP" = "${{ steps.runtimes.outputs.fingerprint }}" ]; then
+            echo "==> Using cached runtimes (fingerprint $CACHED_FP matched)"
+          else
+            echo "==> 指纹不匹配（cached=${CACHED_FP}），重新下载 bundled runtimes"
+            bash scripts/download-runtimes.sh windows-x64
+          fi
+          echo "=== Bundled runtimes ==="
+          ls src-tauri/runtimes/python/ | head -5
+          ls src-tauri/runtimes/node/ | head -5
+          ls src-tauri/runtimes/git/ | head -5
+          ls src-tauri/runtimes/pandoc/ | head -5
+          ls src-tauri/runtimes/uv/ | head -5
+
+      - name: Build Tauri Windows x64
+        working-directory: ${{ env.SOURCE_DIR }}
+        env:
+          OPENSSL_DIR: C:\vcpkg\installed\x64-windows-static
+          OPENSSL_STATIC: '1'
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        # ⚠ 后台地址只能在 shell 里按需 export，不能写进上面的 env:：
+        #   Vite 6 的 loadEnv 里 `for (const key in process.env)` 是无条件覆盖 .env 文件的
+        #   （node_modules/vite/dist/node/chunks/dep-*.js:16967-16971），所以进程变量确实赢；
+        #   但**空字符串也算存在**—— Actions 的 `env:` 给空值会把键建出来，标准包就会带着
+        #   一个空的 VITE_API_BASE_URL 出厂（前端回落链是 `覆盖值 || env || ''`，空串直接把
+        #   .env.production 那台生产服务器顶掉，症状是登录/接口全失败且不报错）。
+        run: |
+          if [ -n "${API_BASE_URL:-}" ]; then
+            export VITE_API_BASE_URL="$API_BASE_URL"
+            echo "====== 后台地址（私有内置）：$VITE_API_BASE_URL ======"
+          else
+            echo "====== 后台地址：未指定，走仓库 .env.production ======"
+          fi
+          pnpm run tauri build
+
+      - name: 🔍 校验打包结果（图标 / 后台地址 / 身份）
+        working-directory: ${{ env.SOURCE_DIR }}
+        shell: bash
+        run: |
+          # 这里不套 pipefail：下面有 `ls | head` 这类提前关管道的用法，pipefail 会把 141 当失败
+          echo "====== 产物图标文件 ======"
+          ls -la src-tauri/icons/ | head -20
+          echo "==========================="
+
+          # 前端地址是构建期内联的，直接 grep dist 才能确认「真的烧进去了」：
+          # 覆盖机制失效时（见上一步的 loadEnv 说明）构建一样会成功，症状要等装机后才暴露。
+          echo "====== dist 内出现的后端地址 ======"
+          grep -rohE 'https?://[a-zA-Z0-9._/-]*' dist/assets/*.js 2>/dev/null | sort -u | head -20 || echo "（未抓到）"
+          echo "=================================="
+          if [ -n "${API_BASE_URL:-}" ]; then
+            if ! grep -rq -- "$API_BASE_URL" dist/assets/; then
+              echo "❌ 私有后台地址没进产物：$API_BASE_URL"
+              echo "   说明 VITE_API_BASE_URL 没被 Vite 采纳（检查 dist 是否为本次构建、.env 是否覆盖了进程变量）。"
+              exit 1
+            fi
+            if grep -rq "alinesno-infra-cowork-boot" dist/assets/; then
+              echo "⚠️ 产物里仍残留标准生产域名（新版源码里没有这个硬编码，可能是旧 tag 的兜底常量）："
+              grep -rl "alinesno-infra-cowork-boot" dist/assets/ | head -5
+            fi
+            echo "✅ 私有后台地址已内联：$API_BASE_URL"
+          fi
+      # =====================================================
+
+
+      # ===================== 下载签名工具 =====================
+      - name: Download EVSign CLI (SignClient.exe)
+        shell: bash
+        run: |
+          SIGN_TOOL_DIR="C:/evsign-cli"
+          mkdir -p "$SIGN_TOOL_DIR"
+
+          # 下载链接中包含中文文件名（自助签名工具_v2.3.3.exe），保存为英文避免编码问题
+          DOWNLOAD_URL="https://down.evsign.cn/software/%E8%87%AA%E5%8A%A9%E7%AD%BE%E5%90%8D%E5%B7%A5%E5%85%B7_v2.3.3.exe"
+          SIGN_CLIENT_PATH="$SIGN_TOOL_DIR/SignClient.exe"
+
+          echo "====== 下载 EVSign 自助签名工具 v2.3.3 ======"
+          echo "下载地址: $DOWNLOAD_URL"
+          echo "保存路径: $SIGN_CLIENT_PATH"
+
+          curl -L -o "$SIGN_CLIENT_PATH" "$DOWNLOAD_URL"
+          CURL_EXIT=$?
+          if [ $CURL_EXIT -ne 0 ]; then
+            echo "❌ 下载失败，curl 退出码: $CURL_EXIT"
+            exit 1
+          fi
+
+          if [ -f "$SIGN_CLIENT_PATH" ]; then
+            FILE_SIZE=$(du -h "$SIGN_CLIENT_PATH" | cut -f1)
+            echo "✅ 下载完成: $SIGN_CLIENT_PATH ($FILE_SIZE)"
+          else
+            echo "❌ SignClient.exe 下载后不存在"
+            exit 1
+          fi
+
+          # 写入环境变量供后续步骤使用
+          echo "$SIGN_TOOL_DIR" >> "$GITHUB_PATH"
+          echo "SIGN_CLIENT_PATH=$SIGN_CLIENT_PATH" >> "$GITHUB_ENV"
+          echo "====== 签名工具准备就绪 ======"
+      # =====================================================
+
+      # ===================== 代码签名 (CLI) =====================
+      - name: Sign installers (CLI)
+        id: cli-sign
+        shell: bash
+        env:
+          EV_SIGN_KEY: ${{ secrets.EV_SIGN_KEY }}
+        run: |
+          set -e
+          SIGN_CLIENT="$SIGN_CLIENT_PATH"
+          if [ -z "$SIGN_CLIENT" ]; then
+            SIGN_CLIENT="C:/evsign-cli/SignClient.exe"
+          fi
+          if [ ! -f "$SIGN_CLIENT" ]; then
+            echo "❌ SignClient.exe 不存在: $SIGN_CLIENT"
+            exit 1
+          fi
+
+          echo "====== 开始 CLI 签名安装包 ======"
+          echo "签名工具路径: $SIGN_CLIENT"
+
+          SIGN_SUCCESS=true
+
+          # 签名 NSIS (.exe)
+          EXE_FILE=$(ls ${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/nsis/*.exe 2>/dev/null | head -1)
+          if [ -n "$EXE_FILE" ]; then
+            echo ""
+            echo "==> 签名 NSIS: $(basename "$EXE_FILE")"
+            echo "==> 文件路径: $EXE_FILE"
+            EXE_SIZE=$(du -h "$EXE_FILE" | cut -f1)
+            echo "==> 文件大小: $EXE_SIZE"
+
+            SIGN_OUTPUT=$("$SIGN_CLIENT" "$EXE_FILE" -key "$EV_SIGN_KEY" 2>&1) || true
+            EXIT_CODE=$?
+            echo "------ SignClient 输出 ------"
+            echo "$SIGN_OUTPUT"
+            echo "------ 退出码: $EXIT_CODE ------"
+
+            # 判断签名是否成功：检查输出中是否包含"签名完成"且退出码为 0
+            if echo "$SIGN_OUTPUT" | grep -q "签名完成" && [ "$EXIT_CODE" -eq 0 ]; then
+              echo "✅ NSIS 签名成功: $(basename "$EXE_FILE")"
+              echo "EVSIGN_NSIS_RESULT=SUCCESS" >> "$GITHUB_OUTPUT"
+            else
+              echo "❌ NSIS 签名失败！退出码=$EXIT_CODE"
+              echo "EVSIGN_NSIS_RESULT=FAILED" >> "$GITHUB_OUTPUT"
+              SIGN_SUCCESS=false
+            fi
+          else
+            echo "⚠️ 未找到 NSIS .exe 文件，跳过签名"
+            echo "EVSIGN_NSIS_RESULT=SKIPPED" >> "$GITHUB_OUTPUT"
+          fi
+
+          # 签名 MSI (.msi)
+          MSI_FILE=$(ls ${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/msi/*.msi 2>/dev/null | head -1)
+          if [ -n "$MSI_FILE" ]; then
+            echo ""
+            echo "==> 签名 MSI: $(basename "$MSI_FILE")"
+            echo "==> 文件路径: $MSI_FILE"
+            MSI_SIZE=$(du -h "$MSI_FILE" | cut -f1)
+            echo "==> 文件大小: $MSI_SIZE"
+
+            SIGN_OUTPUT=$("$SIGN_CLIENT" "$MSI_FILE" -key "$EV_SIGN_KEY" 2>&1) || true
+            EXIT_CODE=$?
+            echo "------ SignClient 输出 ------"
+            echo "$SIGN_OUTPUT"
+            echo "------ 退出码: $EXIT_CODE ------"
+
+            if echo "$SIGN_OUTPUT" | grep -q "签名完成" && [ "$EXIT_CODE" -eq 0 ]; then
+              echo "✅ MSI 签名成功: $(basename "$MSI_FILE")"
+              echo "EVSIGN_MSI_RESULT=SUCCESS" >> "$GITHUB_OUTPUT"
+            else
+              echo "❌ MSI 签名失败！退出码=$EXIT_CODE"
+              echo "EVSIGN_MSI_RESULT=FAILED" >> "$GITHUB_OUTPUT"
+              SIGN_SUCCESS=false
+            fi
+          else
+            echo "⚠️ 未找到 MSI .msi 文件，跳过签名"
+            echo "EVSIGN_MSI_RESULT=SKIPPED" >> "$GITHUB_OUTPUT"
+          fi
+
+          # 汇总签名结果
+          echo ""
+          echo "====== 签名结果汇总 ======"
+          if [ -n "$EXE_FILE" ]; then
+            echo "NSIS (.exe): $([ "$SIGN_SUCCESS" = true ] && [ -n "$EXE_FILE" ] && echo '✅ 成功' || echo '❌ 失败')"
+          else
+            echo "NSIS (.exe): ⚠️ 跳过"
+          fi
+          echo "=========================="
+
+          if [ "$SIGN_SUCCESS" = "false" ]; then
+            echo "❌ 存在签名失败的文件，中止构建"
+            exit 1
+          fi
+
+          echo "====== CLI 签名全部完成 ======"
+      # =====================================================
+
+      - name: Upload NSIS installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.BRAND }}-${{ env.VERSION }}-Windows-x64${{ env.ARTIFACT_TAG }}-installer
+          path: ${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/nsis/*.exe
+
+      - name: Upload MSI installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.BRAND }}-${{ env.VERSION }}-Windows-x64${{ env.ARTIFACT_TAG }}-msi
+          path: ${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/msi/*.msi
+
+      # ===================== 七牛云上传 =====================
+      # 标准包与私有包都传，但落到各自的目录：私有包进 aip-cowork-releases/private/<slug>/，
+      # 不会覆盖标准发布的固定名产物，也不会被 latest.json 的固定 key 撞到。
+      - name: Install qshell (Windows)
+        run: |
+          curl -L https://github.com/qiniu/qshell/releases/download/v2.18.0/qshell-v2.18.0-windows-amd64.zip -o qshell.zip
+          powershell -Command "Expand-Archive qshell.zip -DestinationPath C:\Windows"
+          qshell version
+
+      - name: Upload Windows MSI & EXE to Qiniu
+        run: |
+          qshell account "${{ secrets.QINIU_ACCESS_KEY }}" "${{ secrets.QINIU_SECRET_KEY }}" "github-action"
+
+          $PREFIX = "${env:RELEASE_PREFIX}"
+          $BASENAME = "${env:BRAND}-${{ env.VERSION }}-Windows-x64"
+          Write-Output "====== 发布目录：$PREFIX / 产物名：$BASENAME ======"
+
+          $msi = Get-ChildItem "${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/msi/*.msi" | Select-Object -First 1
+          $SAVE_NAME = "$PREFIX/$BASENAME.msi"
+          qshell rput --overwrite ${{ secrets.QINIU_BUCKET }} $SAVE_NAME $msi.FullName
+          echo "✅ MSI 上传成功：https://${{ secrets.QINIU_DOMAIN }}/$SAVE_NAME"
+
+          $exe = Get-ChildItem "${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/nsis/*.exe" | Select-Object -First 1
+          $SAVE_NAME = "$PREFIX/$BASENAME.exe"
+          qshell rput --overwrite ${{ secrets.QINIU_BUCKET }} $SAVE_NAME $exe.FullName
+          echo "✅ EXE 上传成功：https://${{ secrets.QINIU_DOMAIN }}/$SAVE_NAME"
+      # =====================================================
+
+
+      # ===================== 更新 latest.json =====================
+      # 各写各的 feed：标准包写 aip-cowork-releases/latest.json（与原版一致），
+      # 私有包写 aip-cowork-releases/private/<slug>/latest.json —— 私有客户端只会被推到私有包。
+      - name: Update latest.json for Windows platform
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "====== 开始更新 latest.json (windows-x86_64) ======"
+
+          # 列出 bundle 目录所有文件，方便排查
+          echo "📂 NSIS bundle 目录内容："
+          ls -la ${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/nsis/ || true
+
+          # 读取 minisign 签名
+          # Tauri v2 (createUpdaterArtifacts=true): 生成 .exe.sig
+          # Tauri v1 compatible: 生成 .nsis.zip.sig
+          SIG_FILE=$(ls ${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/nsis/*.exe.sig 2>/dev/null | head -1)
+          if [ -z "$SIG_FILE" ]; then
+            echo "⚠️ 未找到 .exe.sig，尝试查找 .nsis.zip.sig ..."
+            SIG_FILE=$(ls ${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/nsis/*.nsis.zip.sig 2>/dev/null | head -1)
+          fi
+          if [ -z "$SIG_FILE" ]; then
+            echo "❌ 未找到任何签名文件，列出所有 .sig 文件排查："
+            find ${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/ -name "*.sig" 2>/dev/null || echo "（无 .sig 文件）"
+            echo "跳过 latest.json 更新"
+            exit 0
+          fi
+          SIGNATURE=$(cat "$SIG_FILE" | tr -d '\r\n')
+          echo "✅ 读取到 minisign 签名文件: $(basename "$SIG_FILE")"
+
+          QINIU_DOMAIN="https://${{ secrets.QINIU_DOMAIN }}"
+          # RELEASE_PREFIX / BRAND 由「Resolve private build params」写入：
+          # 标准包 = aip-cowork-releases + Cowork（与原版逐字一致），私有包 = 各自的目录与品牌段
+          LATEST_JSON_URL="${QINIU_DOMAIN}/${RELEASE_PREFIX}/latest.json"
+          DOWNLOAD_URL="${QINIU_DOMAIN}/${RELEASE_PREFIX}/${BRAND}-${{ env.VERSION }}-Windows-x64.exe"
+          PLATFORM_KEY="windows-x86_64"
+          echo "📤 feed: $LATEST_JSON_URL"
+          echo "📦 url : $DOWNLOAD_URL"
+
+          # 下载现有 latest.json 或创建空模板
+          BASE_JSON='{"version":"","notes":"","pub_date":"","platforms":{}}'
+          if curl -sf -o existing_latest.json "$LATEST_JSON_URL" && [ -s existing_latest.json ]; then
+            echo "✅ 已下载现有 latest.json"
+            # 验证是否为合法 JSON
+            if jq empty existing_latest.json 2>/dev/null; then
+              BASE_JSON=$(cat existing_latest.json)
+            else
+              echo "⚠️ 现有 latest.json 不是合法 JSON，使用空模板"
+            fi
+          else
+            echo "⚠️ 未找到现有 latest.json（首次构建），使用空模板"
+          fi
+
+          # 合并当前平台条目
+          UPDATED_JSON=$(echo "$BASE_JSON" | jq \
+            --arg v "${{ env.VERSION }}" \
+            --arg notes "$PRODUCT_NAME ${{ env.VERSION }}" \
+            --arg pub_date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg sig "$SIGNATURE" \
+            --arg url "$DOWNLOAD_URL" \
+            --arg pk "$PLATFORM_KEY" \
+            '.version = $v | .notes = $notes | .pub_date = $pub_date | .platforms[$pk] = {"signature": $sig, "url": $url}')
+
+          # 写回前最后一道闸：这份 feed 的下载地址必须落在自己的目录里。
+          # 私有包误写标准 feed（或标准包误写私有目录）都不会报错，只会让客户拿到错的那个包。
+          if [ "$(echo "$UPDATED_JSON" | jq -r --arg pk "$PLATFORM_KEY" '.platforms[$pk].url')" != "$DOWNLOAD_URL" ]; then
+            echo "❌ latest.json 里的下载地址与本次产物不一致，中止写入"
+            exit 1
+          fi
+
+          echo "$UPDATED_JSON" > latest.json
+          echo "📄 生成的 latest.json:"
+          cat latest.json | jq .
+
+          # 上传 latest.json 到七牛
+          qshell rput --overwrite ${{ secrets.QINIU_BUCKET }} "$RELEASE_PREFIX/latest.json" "$(pwd)/latest.json"
+          echo "✅ latest.json 已上传到七牛云：$LATEST_JSON_URL"
+          echo "====== latest.json 更新完成 ======"
+      # ===========================================================
+
+      - name: 📦 私有发布摘要
+        if: steps.custom.outputs.is_private == 'true'
+        shell: bash
+        run: |
+          echo "=============================================="
+          echo "📦 私有版出包：$PRODUCT_NAME"
+          echo "=============================================="
+          echo "后台地址  : $API_BASE_URL"
+          echo "应用标识  : $IDENTIFIER"
+          echo "命名空间  : ${SLUG:-}"
+          echo "发布目录  : $RELEASE_PREFIX"
+          echo "升级通道  : $UPDATER_FEED"
+          echo "产物      : $BRAND-${{ env.VERSION }}-Windows-x64.{exe,msi}（Actions 制品同名，另有 Draft Release）"
+          echo "----------------------------------------------"
+          echo "交付要点："
+          echo "  1. 客户机若装过标准版：两份并存互不影响（~/.aipcowork 那一层应用状态仍共用，见 workflow 顶部说明）；"
+          echo "  2. 应用内的名称/Logo/副标题/主题/登录地址由那台后台的「团队配置」运行时下发，"
+          echo "     装机后改后台配置即可，不用重新打包；这里烧的是安装包级别的身份；"
+          echo "  3. 下一次私有升级：改完代码打新 tag，再用同一组参数重跑本 workflow，"
+          echo "     私有 feed 会自动合并出新版；不给私有 feed 传包，客户就永远收不到升级。"
+          echo "=============================================="
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.SELECTED_TAG }}
+          name: ${{ steps.custom.outputs.product_name }} ${{ env.VERSION }} (Windows x64${{ steps.custom.outputs.is_private == 'true' && format(' · 私有 {0}', steps.custom.outputs.slug) || '' }})
+          body: |
+            出包参数：
+            - 包类型：${{ steps.custom.outputs.is_private == 'true' && format('私有版（{0}）', steps.custom.outputs.product_name) || '标准版' }}
+            - 后台地址：${{ steps.custom.outputs.api_base_url != '' && steps.custom.outputs.api_base_url || '（未指定，沿用仓库生产配置）' }}
+            - 应用标识：${{ steps.custom.outputs.is_private == 'true' && format('com.aipcowork.{0}', steps.custom.outputs.slug) || 'com.aipcowork.app' }}
+            - 升级通道：${{ steps.custom.outputs.is_private == 'true' && steps.custom.outputs.updater_feed || '（仓库内置官方 feed）' }}
+            - 桌面图标：${{ steps.custom.outputs.icon_source == 'artifact' && format('上传文件（artifact {0}）', steps.custom.outputs.icon_artifact) || (steps.custom.outputs.icon_source == 'url' && format('直链 {0}', steps.custom.outputs.icon_url) || '仓库自带图标') }}
+          draft: true
+          files: |
+            ${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/nsis/*.exe
+            ${{ env.SOURCE_DIR }}/src-tauri/target/release/bundle/msi/*.msi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
