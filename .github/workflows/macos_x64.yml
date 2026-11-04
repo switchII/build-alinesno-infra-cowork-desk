@@ -157,7 +157,7 @@ jobs:
           VERSION=${{ steps.extract-version.outputs.VERSION }}
            
           jq --arg v "$VERSION" \
-            '.version = $v | .productName = "Cowork" | .build.beforeBuildCommand = "pnpm run build" | .build.beforeDevCommand = "pnpm run dev" | .bundle.resources = ["runtimes/python/**/*", "runtimes/node/**/*", "runtimes/git/**/*", "runtimes/pandoc/**/*", "runtimes/uv/**/*"]' \
+            '.version = $v | .productName = "Cowork" | .build.beforeBuildCommand = "pnpm run build" | .build.beforeDevCommand = "pnpm run dev" | .bundle.resources = ["runtimes/python/**/*", "runtimes/node/**/*", "runtimes/git/**/*", "runtimes/pandoc/**/*"]' \
             src-tauri/tauri.conf.json > tmp.json && mv tmp.json src-tauri/tauri.conf.json
  
           echo "====== 开始版本配置 ======"
@@ -176,11 +176,10 @@ jobs:
         working-directory: ${{ env.SOURCE_DIR }}
         shell: bash
         run: |
-          # 缓存 key 由「download-runtimes.sh + requirements-base.txt」的内容决定：
-          # 脚本里任何版本号（Node/Python/Git/Pandoc）或 base 包清单变化都会自动换 key。
-          # 以前是手写字面量，出现过脚本升到 Node 22、key 还写着 node20，命中旧缓存后
-          # 目录存在即跳过下载，把过期运行时/过期 wheel 打进了安装包。
-          FP="$( (cat scripts/download-runtimes.sh scripts/requirements-base.txt || true) | (sha256sum 2>/dev/null || shasum -a 256) | cut -c1-16)"
+          # 缓存 key 由 download-runtimes.sh 的内容决定：脚本里任何版本号（Node/Python/Git/Pandoc）
+          # 变化都会自动换 key。以前是手写字面量，出现过脚本升到 Node 22、key 还写着 node20，
+          # 命中旧缓存后目录存在即跳过下载，把过期运行时打进了安装包。
+          FP="$( (sha256sum scripts/download-runtimes.sh 2>/dev/null || shasum -a 256 scripts/download-runtimes.sh) | cut -c1-16)"
           echo "fingerprint=$FP" >> "$GITHUB_OUTPUT"
           echo "==> bundled runtimes fingerprint: $FP"
 
@@ -209,7 +208,6 @@ jobs:
           ls src-tauri/runtimes/node/bin/ | head -5
           ls src-tauri/runtimes/git/ | head -5
           ls src-tauri/runtimes/pandoc/ | head -5
-          ls src-tauri/runtimes/uv/ | head -5
 
       - name: Import Apple Code Signing Certificate
         env:
@@ -283,55 +281,6 @@ jobs:
               fi
             fi
           done < <(find "$RUNTIME_DIR" -type f -print0)
-          
-          # ─── py-wheels 内嵌二进制签名（公证会递归解包扫描 zip 内的 Mach-O）───
-          # 上面的 find 只遍历普通文件，进不了 .whl 归档内部；PyPI C 扩展 wheel 里的
-          # .so 多为 ad-hoc/未签名且无 timestamp，公证必报 Invalid（preshed/lxml…）。
-          # 处理：解包 → 对其中 Mach-O 签名 → 原位重打包覆盖。
-          # 注：重打包后 .dist-info/RECORD 的 sha256 过期，pip 安装 wheel 不校验
-          # RECORD（非 --require-hashes 模式），实测安装+导入正常，可接受。
-          WHEELS_DIR="$RUNTIME_DIR/python/py-wheels"
-          if [ -d "$WHEELS_DIR" ]; then
-            WHEELS_TMP="$(mktemp -d)"
-            WHEEL_REPACKED=0
-            WHEEL_FAIL=0
-            echo "==> 签名 py-wheels 内嵌 Mach-O（公证要求嵌套二进制也签 Developer ID + timestamp）"
-            for whl in "$WHEELS_DIR"/*.whl; do
-              [ -f "$whl" ] || continue
-              rm -rf "$WHEELS_TMP/w" && mkdir -p "$WHEELS_TMP/w"
-              if ! unzip -q -o "$whl" -d "$WHEELS_TMP/w"; then
-                echo "  ⚠️ 解包失败，跳过: $whl"
-                continue
-              fi
-              NESTED_SIGNED=0; NESTED_FAIL=0
-              while IFS= read -r -d '' f; do
-                if file "$f" | grep -q "Mach-O"; then
-                  # 内嵌 .so 无需 runtime entitlement（非可执行入口），timestamp 必须带
-                  if codesign --force --sign "$IDENTITY" --timestamp "$f" 2>&1; then
-                    NESTED_SIGNED=$((NESTED_SIGNED + 1))
-                  else
-                    echo "  ⚠️ Failed to sign (nested): $f"
-                    NESTED_FAIL=$((NESTED_FAIL + 1))
-                  fi
-                fi
-              done < <(find "$WHEELS_TMP/w" -type f -print0)
-              if [ "$NESTED_FAIL" -gt 0 ]; then
-                WHEEL_FAIL=$((WHEEL_FAIL + 1))
-              elif [ "$NESTED_SIGNED" -gt 0 ]; then
-                # 原位重打包覆盖（保留原文件名与条目路径，zip 的 '.' 不带 ./ 前缀）
-                rm -f "$whl"
-                ( cd "$WHEELS_TMP/w" && zip -q -r -X "$whl" . )
-                WHEEL_REPACKED=$((WHEEL_REPACKED + 1))
-                echo "  ✅ $(basename "$whl"): $NESTED_SIGNED 个内嵌 Mach-O 已签名并重打包"
-              fi
-            done
-            rm -rf "$WHEELS_TMP"
-            if [ "$WHEEL_FAIL" -gt 0 ]; then
-              echo "❌ 有 $WHEEL_FAIL 个 wheel 内嵌签名失败，请检查"
-              exit 1
-            fi
-            echo "✅ wheel 内嵌签名完成：重打包 $WHEEL_REPACKED 个 wheel"
-          fi
           
           echo ""
           echo "✅ 签名完成：成功 $SIGN_COUNT 个，失败 $SIGN_FAIL 个"
