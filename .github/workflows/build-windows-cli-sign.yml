@@ -154,7 +154,7 @@ jobs:
           VERSION=${{ steps.extract-version.outputs.VERSION }}
            
           jq --arg v "$VERSION" \
-            '.version = $v | .productName = "Cowork" | .build.beforeBuildCommand = "pnpm run build" | .build.beforeDevCommand = "pnpm run dev" | .bundle.resources = ["runtimes/python/**/*", "runtimes/node/**/*", "runtimes/git/**/*", "runtimes/pandoc/**/*"]' \
+            '.version = $v | .productName = "Cowork" | .build.beforeBuildCommand = "pnpm run build" | .build.beforeDevCommand = "pnpm run dev" | .bundle.resources = ["runtimes/python/**/*", "runtimes/node/**/*", "runtimes/git/**/*", "runtimes/pandoc/**/*", "runtimes/uv/**/*"]' \
             src-tauri/tauri.conf.json > tmp.json && mv tmp.json src-tauri/tauri.conf.json
  
           echo "====== 版本配置完成 ======"
@@ -174,10 +174,11 @@ jobs:
         working-directory: ${{ env.SOURCE_DIR }}
         shell: bash
         run: |
-          # 缓存 key 由 download-runtimes.sh 的内容决定：脚本里任何版本号（Node/Python/Git/Pandoc）
-          # 变化都会自动换 key。以前是手写字面量，出现过脚本升到 Node 22、key 还写着 node20，
-          # 命中旧缓存后目录存在即跳过下载，把过期运行时打进了安装包。
-          FP="$( (sha256sum scripts/download-runtimes.sh 2>/dev/null || shasum -a 256 scripts/download-runtimes.sh) | cut -c1-16)"
+          # 缓存 key 由「download-runtimes.sh + requirements-base.txt」的内容决定：
+          # 脚本里任何版本号（Node/Python/Git/Pandoc）或 base 包清单变化都会自动换 key。
+          # 以前是手写字面量，出现过脚本升到 Node 22、key 还写着 node20，命中旧缓存后
+          # 目录存在即跳过下载，把过期运行时/过期 wheel 打进了安装包。
+          FP="$( (cat scripts/download-runtimes.sh scripts/requirements-base.txt || true) | (sha256sum 2>/dev/null || shasum -a 256) | cut -c1-16)"
           echo "fingerprint=$FP" >> "$GITHUB_OUTPUT"
           echo "==> bundled runtimes fingerprint: $FP"
 
@@ -207,6 +208,7 @@ jobs:
           ls src-tauri/runtimes/node/ | head -5
           ls src-tauri/runtimes/git/ | head -5
           ls src-tauri/runtimes/pandoc/ | head -5
+          ls src-tauri/runtimes/uv/ | head -5
 
       - name: Build Tauri Windows x64
         working-directory: ${{ env.SOURCE_DIR }}
@@ -431,15 +433,36 @@ jobs:
             echo "⚠️ 未找到现有 latest.json（首次构建），使用空模板"
           fi
 
-          # 合并当前平台条目
+          # 合并平台条目。这里把两个 macOS 条目一起写，是为了治「feed 只剩 windows」：
+          # 三条平台链路都是「读整份 latest.json → 改自己一个 key → 整份覆盖上传」，
+          # build-all 里 windows 排在最后，只要它这次读回的是 CDN 上的旧快照，
+          # 就会把前面两个 mac 条目整片盖掉。不依赖读回来的内容、显式带上 mac，
+          # 读到什么都不丢。base 仍作底，是为了以后新增平台（如 linux）不被这里抹掉。
+          #
+          # url 直接按 mac 两个 workflow 里的固定命名拼，三边共用同一个 tag（见 build-all.yml 透传的 inputs.tag）。
+          # mac 的 signature 是占位值：本项目的更新只取 platforms[key].url 跳浏览器手动装
+          # （src/components/settings/UpdateSection.vue 里没有任何 download_and_install 调用），
+          # 不走验签路径。字段必须存在且非空，否则 manifest 解析失败、check() 直接报错。
+          # ⚠ 以后若加「一键安装」，这里必须改成上传各平台真实的 *.app.tar.gz.sig。
+          ARM64_URL="${QINIU_DOMAIN}/aip-cowork-releases/Cowork-${{ env.VERSION }}-macOS-arm64.dmg"
+          X64_URL="${QINIU_DOMAIN}/aip-cowork-releases/Cowork-${{ env.VERSION }}-macOS-x64.dmg"
+
           UPDATED_JSON=$(echo "$BASE_JSON" | jq \
             --arg v "${{ env.VERSION }}" \
             --arg notes "Cowork ${{ env.VERSION }}" \
             --arg pub_date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             --arg sig "$SIGNATURE" \
             --arg url "$DOWNLOAD_URL" \
+            --arg arm64Url "$ARM64_URL" \
+            --arg x64Url "$X64_URL" \
             --arg pk "$PLATFORM_KEY" \
-            '.version = $v | .notes = $notes | .pub_date = $pub_date | .platforms[$pk] = {"signature": $sig, "url": $url}')
+            '.version = $v | .notes = $notes | .pub_date = $pub_date
+             | (.platforms // {}) as $p
+             | .platforms = ($p + {
+                 ($pk):            {"signature": $sig, "url": $url},
+                 "darwin-aarch64": {"signature": $sig, "url": $arm64Url},
+                 "darwin-x86_64":  {"signature": $sig, "url": $x64Url}
+               })')
 
           echo "$UPDATED_JSON" > latest.json
           echo "📄 生成的 latest.json:"
