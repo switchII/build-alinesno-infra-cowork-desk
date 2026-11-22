@@ -163,16 +163,32 @@ jobs:
           fi
 
           echo "==> 下载 Logo: $LOGO_URL"
-          curl -fL --retry 3 --retry-delay 2 -o vendor-logo.png "$LOGO_URL"
+          curl -fsSL --retry 3 --retry-delay 2 -o vendor-logo.png "$LOGO_URL"
 
-          # 图本身的校验交给 tauri icon：非 PNG、非正方形都直接报错退出
-          # （实测提示 “Invalid PNG signature” / “Source image must be square”）。
+          # tauri icon 只吃正方形 PNG，而厂家给的 logo 多半是矩形（实测 zhixie-logo.png
+          # 4264x4417 直接报 "Source image must be square"）。先补成正方形再交给它：
+          # 边长取长边、原图居中、底色取左上角像素（带透明通道的 logo 底色也是透明的，
+          # 不透明的 logo 则延续原底色），最后统一缩到 1024 —— icns 最大 512@2x 正好用满。
+          python -m pip install --quiet --disable-pip-version-check pillow
+          python - <<'PY'
+          from PIL import Image
+
+          im = Image.open("vendor-logo.png").convert("RGBA")
+          w, h = im.size
+          side = max(w, h)
+          bg = im.getpixel((0, 0))
+          canvas = Image.new("RGBA", (side, side), bg)
+          canvas.paste(im, ((side - w) // 2, (side - h) // 2), im)
+          canvas.resize((1024, 1024), Image.LANCZOS).save("vendor-logo-square.png", "PNG")
+          print(f"logo {w}x{h} -> 1024x1024 (bg={bg})")
+          PY
+
           # 输出目录默认就是 tauri.conf.json 旁的 icons，覆盖 32x32/128x128/128x128@2x/
           # icon.ico/icon.icns/Square*/StoreLogo —— 正是 bundle.icon 引用的那几张；
           # cargo 对 bundle.icon 里的文件有 rerun-if-changed（tauri-build 2.6.2 的
           # codegen/context.rs），所以 exe 资源、窗口/托盘图标（default_window_icon）都会跟着换。
-          pnpm run tauri icon vendor-logo.png
-          rm -f vendor-logo.png
+          pnpm run tauri icon vendor-logo-square.png
+          rm -f vendor-logo.png vendor-logo-square.png
           ls -l src-tauri/icons/icon.ico src-tauri/icons/32x32.png src-tauri/icons/128x128@2x.png
 
       - name: Install OpenSSL via vcpkg
